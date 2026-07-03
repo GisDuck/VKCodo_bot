@@ -15,6 +15,10 @@ export async function buildApp() {
   await app.register(paymentsRoutes);
   await app.register(adminRoutes);
 
+  app.get("/", async (_request, reply) => {
+    return reply.redirect("/admin");
+  });
+
   app.get("/health", async () => ({ ok: true }));
 
   app.post("/jobs/expire-payments", async () => {
