@@ -40,6 +40,26 @@ export class VkMessageService {
     );
   }
 
+  async sendCourseOptionsWithEdits(
+    peerId: number,
+    age: number,
+    options: CourseOption[],
+    editButtons: Button[]
+  ): Promise<void> {
+    await this.sendKeyboard(
+      peerId,
+      "Какое направление вас интересует?",
+      [
+        ...options.map((option) => ({
+          label: option.label,
+          payload: { action: "course_option", option: option.key, age },
+          color: "primary" as const
+        })),
+        ...editButtons
+      ]
+    );
+  }
+
   async sendSubCourseOptions(
     peerId: number,
     options: Array<{ key: string; label: string }>,
@@ -62,15 +82,22 @@ export class VkMessageService {
     );
   }
 
-  async sendBranchOptions(peerId: number, branches: Array<{ id: string; name: string }>): Promise<void> {
+  async sendBranchOptions(
+    peerId: number,
+    branches: Array<{ id: string; name: string }>,
+    editButtons: Button[] = []
+  ): Promise<void> {
     await this.sendKeyboard(
       peerId,
-      "Выберите филиал:",
-      branches.map((branch) => ({
-        label: branch.name,
-        payload: { action: "branch", branchId: branch.id },
-        color: "secondary"
-      }))
+      "По какому адресу Вам удобнее будет нас посетить?",
+      [
+        ...branches.map((branch) => ({
+          label: branch.name,
+          payload: { action: "branch", branchId: branch.id },
+          color: "secondary" as const
+        })),
+        ...editButtons
+      ]
     );
   }
 
@@ -83,13 +110,21 @@ export class VkMessageService {
 
   buildCourseConfirmButtons() {
     return [
-      { label: "Да, записываем", payload: { action: "course_confirm", accepted: true }, color: "positive" },
       {
         label: "Нет, выбрать другой курс",
         payload: { action: "course_confirm", accepted: false },
         color: "negative"
-      }
+      },
+      { label: "Да, записываем", payload: { action: "course_confirm", accepted: true }, color: "positive" }
     ] satisfies Button[];
+  }
+
+  buildEditButtons(fields: Array<{ field: string; label: string }>): Button[] {
+    return fields.map((item) => ({
+      label: item.label,
+      payload: { action: "edit_field", field: item.field },
+      color: "secondary" as const
+    }));
   }
 
   buildLessonButtons(lessons: Array<{ id: number; classId: number }>) {

@@ -120,12 +120,20 @@ export class VkBotService {
       if (payload.action === "start_trial" || (session.state === "idle" && this.isStartCommand(text))) {
         await this.setSession(parent.id, "awaiting_parent_name", {});
         stateAfter = "awaiting_parent_name";
-        await this.messages.sendText(message.peer_id, "Как вас зовут?");
+        await this.messages.sendText(
+          message.peer_id,
+          "Вас приветствует Бот школы Кодология во Всеволожске и Янино! Давайте познакомимся, как Вас зовут?"
+        );
         return;
       }
 
       if (payload.action === "children") {
         await this.renderChildrenMenu(parent.id, message.peer_id);
+        return;
+      }
+
+      if (payload.action === "edit_field" && typeof payload.field === "string") {
+        await this.handleEditField(parent.id, message.peer_id, draft, payload.field);
         return;
       }
 
@@ -263,7 +271,66 @@ export class VkBotService {
     draft.parentName = text;
     await this.db.parent.update({ where: { id: parentId }, data: { name: text } });
     await this.setSession(parentId, "awaiting_phone", draft);
-    await this.messages.sendText(peerId, "Укажите номер телефона для записи.");
+    await this.messages.sendKeyboard(
+      peerId,
+      `${text}, приятно познакомиться! Подскажите, пожалуйста, номер телефона для записи.`,
+      this.buildEditButtons(draft, ["parentName"])
+    );
+  }
+
+  private async handleEditField(parentId: string, peerId: number, draft: SessionDraft, field: string) {
+    switch (field) {
+      case "parentName":
+        await this.setSession(parentId, "awaiting_parent_name", draft);
+        await this.messages.sendText(peerId, "Хорошо, как Вас зовут?");
+        return;
+      case "phone":
+        await this.setSession(parentId, "awaiting_phone", draft);
+        await this.messages.sendKeyboard(
+          peerId,
+          "Напишите новый номер телефона для записи.",
+          this.buildEditButtons(draft, ["parentName"])
+        );
+        return;
+      case "childrenCount":
+        await this.setSession(parentId, "awaiting_children_count", draft);
+        await this.messages.sendKeyboard(
+          peerId,
+          "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
+          this.buildEditButtons(draft, ["parentName", "phone"])
+        );
+        return;
+      case "childName":
+        await this.setSession(parentId, "awaiting_child_name", draft);
+        await this.messages.sendKeyboard(
+          peerId,
+          draft.childrenCount === 1 ? "Как зовут вашего ребенка?" : "Как зовут ребенка?",
+          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount"])
+        );
+        return;
+      case "childAge":
+        await this.setSession(parentId, "awaiting_child_age", draft);
+        await this.messages.sendKeyboard(
+          peerId,
+          draft.currentChild?.name
+            ? `${draft.currentChild.name} найдет много интересного в нашей школе! А сколько ему/ей лет?`
+            : "Сколько лет ребенку?",
+          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName"])
+        );
+        return;
+      case "branch": {
+        await this.setSession(parentId, "awaiting_branch", draft);
+        const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+        await this.messages.sendBranchOptions(
+          peerId,
+          branches,
+          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge"])
+        );
+        return;
+      }
+      default:
+        await this.messages.sendText(peerId, "Не понял, что нужно изменить.");
+    }
   }
 
   private async handlePhone(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -275,13 +342,17 @@ export class VkBotService {
     draft.phone = text;
     await this.db.parent.update({ where: { id: parentId }, data: { phone: text } });
     await this.setSession(parentId, "awaiting_children_count", draft);
-    await this.messages.sendText(peerId, "Сколько детей хотите записать на пробное?");
+    await this.messages.sendKeyboard(
+      peerId,
+      "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
+      this.buildEditButtons(draft, ["parentName", "phone"])
+    );
   }
 
   private async handleChildrenCount(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     const count = Number.parseInt(text, 10);
-    if (!Number.isInteger(count) || count < 1 || count > 10) {
-      await this.messages.sendText(peerId, "Напишите число детей от 1 до 10.");
+    if (!Number.isInteger(count) || count < 1 || count > 5) {
+      await this.messages.sendText(peerId, "Напишите число детей от 1 до 5.");
       return;
     }
     draft.childrenCount = count;
@@ -289,7 +360,13 @@ export class VkBotService {
     draft.bookingIds = [];
     draft.currentChild = {};
     await this.setSession(parentId, "awaiting_child_name", draft);
-    await this.messages.sendText(peerId, "Как зовут первого ребенка?");
+    await this.messages.sendKeyboard(
+      peerId,
+      count === 1
+        ? `${draft.parentName ?? ""}, приятно познакомиться! Как зовут вашего ребенка?`.trim()
+        : `${draft.parentName ?? ""}, приятно познакомиться! Как зовут первого ребенка?`.trim(),
+      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount"])
+    );
   }
 
   private async handleChildName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -299,7 +376,11 @@ export class VkBotService {
     }
     draft.currentChild = { name: text };
     await this.setSession(parentId, "awaiting_child_age", draft);
-    await this.messages.sendText(peerId, `Сколько лет ребенку ${text}?`);
+    await this.messages.sendKeyboard(
+      peerId,
+      `${text} найдет много интересного в нашей школе! А сколько ему/ей лет?`,
+      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName"])
+    );
   }
 
   private async handleChildAge(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -314,7 +395,11 @@ export class VkBotService {
 
     await this.messages.sendTrialIntro(peerId);
     const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
-    await this.messages.sendBranchOptions(peerId, branches);
+    await this.messages.sendBranchOptions(
+      peerId,
+      branches,
+      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge"])
+    );
   }
 
   private async handleBranch(
@@ -339,7 +424,12 @@ export class VkBotService {
     await this.setSession(parentId, "awaiting_course", draft);
     const age = draft.currentChild.age;
     if (!age) return;
-    await this.messages.sendCourseOptions(peerId, age, this.courseRouter.getAvailableOptions(age));
+    await this.messages.sendCourseOptionsWithEdits(
+      peerId,
+      age,
+      this.courseRouter.getAvailableOptions(age),
+      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge", "branch"])
+    );
   }
 
   private async handleCourse(
@@ -761,6 +851,32 @@ export class VkBotService {
       update: { state, draft: draft as Prisma.InputJsonValue },
       create: { parentId, state, draft: draft as Prisma.InputJsonValue }
     });
+  }
+
+  private buildEditButtons(draft: SessionDraft, fields: string[]) {
+    const labels: Record<string, string> = {
+      parentName: "Изменить имя",
+      phone: "Изменить телефон",
+      childrenCount: "Изменить число детей",
+      childName: "Изменить имя ребенка",
+      childAge: "Изменить возраст",
+      branch: "Изменить адрес"
+    };
+
+    const hasValue: Record<string, boolean> = {
+      parentName: Boolean(draft.parentName),
+      phone: Boolean(draft.phone),
+      childrenCount: Boolean(draft.childrenCount),
+      childName: Boolean(draft.currentChild?.name),
+      childAge: Boolean(draft.currentChild?.age),
+      branch: Boolean(draft.currentChild?.branchId)
+    };
+
+    return this.messages.buildEditButtons(
+      fields
+        .filter((field) => labels[field] && hasValue[field])
+        .map((field) => ({ field, label: labels[field] }))
+    );
   }
 
   private resolvePrimaryOption(payload: Record<string, unknown>, text: string): PrimaryCourseOption | null {

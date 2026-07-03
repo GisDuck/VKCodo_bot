@@ -173,7 +173,7 @@ export class MoyKlassService {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: init?.method ?? "GET",
       headers: {
-        Authorization: `Bearer ${token}`,
+        "x-access-token": token,
         "Content-Type": "application/json"
       },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body)
