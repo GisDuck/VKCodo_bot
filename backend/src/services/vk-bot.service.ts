@@ -1,16 +1,23 @@
 import { BotCourseCode, Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import type { PrimaryCourseOption, SubCourseOption } from "../domain/catalog.js";
 import { CourseRouterService } from "./course-router.service.js";
 import { BookingService } from "./booking.service.js";
 import { MenuService } from "./menu.service.js";
+import { VkEventLogService } from "./vk-event-log.service.js";
 import { VkMessageService } from "./vk-message.service.js";
 
 type VkIncomingUpdate = {
   type?: string;
+  event_id?: string;
+  group_id?: number;
   object?: {
     message?: {
+      id?: number;
+      conversation_message_id?: number;
       from_id: number;
       peer_id: number;
+      date?: number;
       text?: string;
       payload?: string | Record<string, unknown>;
       ref?: string;
@@ -43,6 +50,9 @@ export class VkBotService {
   private readonly messages = new VkMessageService();
   private readonly booking = new BookingService();
   private readonly menu = new MenuService();
+  private readonly log = new VkEventLogService();
+  private readonly processedEvents = new Map<string, number>();
+  private readonly userQueues = new Map<number, Promise<void>>();
 
   constructor(private readonly db: PrismaClient = prisma) {}
 
@@ -52,6 +62,38 @@ export class VkBotService {
     const message = update.object?.message;
     if (!message?.from_id || !message.peer_id) return;
 
+    const eventKey = this.getEventKey(update);
+    if (this.isDuplicate(eventKey)) {
+      await this.log.write("duplicate_skipped", {
+        eventKey,
+        fromId: message.from_id,
+        peerId: message.peer_id,
+        text: message.text,
+        payload: message.payload
+      });
+      return;
+    }
+
+    const previous = this.userQueues.get(message.from_id) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.processUpdate(update, eventKey));
+
+    this.userQueues.set(
+      message.from_id,
+      next.finally(() => {
+        if (this.userQueues.get(message.from_id) === next) {
+          this.userQueues.delete(message.from_id);
+        }
+      })
+    );
+
+    await next;
+  }
+
+  private async processUpdate(update: VkIncomingUpdate, eventKey: string): Promise<void> {
+    const startedAt = Date.now();
+    const message = update.object!.message!;
     const payload = this.parsePayload(message.payload);
     const text = (message.text ?? "").trim();
     const parent = await this.booking.upsertParent({
@@ -61,106 +103,155 @@ export class VkBotService {
     const session = await this.getSession(parent.id);
     const draft = this.toDraft(session.draft);
 
-    if (payload.action === "start_trial" || /^начать|старт|запис/i.test(text)) {
-      await this.setSession(parent.id, "awaiting_parent_name", {});
-      await this.messages.sendText(message.peer_id, "Как вас зовут?");
-      return;
-    }
+    await this.log.write("message_processing_start", {
+      eventKey,
+      fromId: message.from_id,
+      peerId: message.peer_id,
+      messageId: message.id,
+      conversationMessageId: message.conversation_message_id,
+      text,
+      payload,
+      stateBefore: session.state,
+      draftBefore: draft
+    });
 
-    if (payload.action === "children") {
-      await this.renderChildrenMenu(parent.id, message.peer_id);
-      return;
-    }
+    let stateAfter = session.state;
+    try {
+      if (payload.action === "start_trial" || (session.state === "idle" && this.isStartCommand(text))) {
+        await this.setSession(parent.id, "awaiting_parent_name", {});
+        stateAfter = "awaiting_parent_name";
+        await this.messages.sendText(message.peer_id, "Как вас зовут?");
+        return;
+      }
 
-    if (payload.action === "pay_online" && typeof payload.orderId === "string") {
-      await this.handleOnlinePayment(message.peer_id, payload.orderId);
-      return;
-    }
+      if (payload.action === "children") {
+        await this.renderChildrenMenu(parent.id, message.peer_id);
+        return;
+      }
 
-    if (payload.action === "pay_on_site" && typeof payload.orderId === "string") {
-      await this.handlePayOnSite(message.peer_id, payload.orderId);
-      return;
-    }
+      if (payload.action === "pay_online" && typeof payload.orderId === "string") {
+        await this.handleOnlinePayment(message.peer_id, payload.orderId);
+        return;
+      }
 
-    if (payload.action === "cancel_booking" && typeof payload.bookingId === "string") {
-      await this.handleCancelBooking(message.peer_id, payload.bookingId);
-      return;
-    }
+      if (payload.action === "pay_on_site" && typeof payload.orderId === "string") {
+        await this.handlePayOnSite(message.peer_id, payload.orderId);
+        return;
+      }
 
-    if (payload.action === "change_booking") {
-      await this.messages.sendKeyboard(message.peer_id, "Что хотите изменить?", [
-        {
-          label: "Курс",
-          payload: { action: "change_course", bookingId: payload.bookingId },
-          color: "primary"
-        },
-        {
-          label: "Дату",
-          payload: { action: "change_date", bookingId: payload.bookingId },
-          color: "primary"
+      if (payload.action === "cancel_booking" && typeof payload.bookingId === "string") {
+        await this.handleCancelBooking(message.peer_id, payload.bookingId);
+        return;
+      }
+
+      if (payload.action === "change_booking") {
+        await this.messages.sendKeyboard(message.peer_id, "Что хотите изменить?", [
+          {
+            label: "Курс",
+            payload: { action: "change_course", bookingId: payload.bookingId },
+            color: "primary"
+          },
+          {
+            label: "Дату",
+            payload: { action: "change_date", bookingId: payload.bookingId },
+            color: "primary"
+          }
+        ]);
+        return;
+      }
+
+      if (payload.action === "change_course" || payload.action === "change_date") {
+        if (payload.action === "change_course" && typeof payload.bookingId === "string") {
+          await this.handleChangeCourseStart(parent.id, message.peer_id, payload.bookingId);
+          return;
         }
-      ]);
-      return;
-    }
-
-    if (payload.action === "change_course" || payload.action === "change_date") {
-      if (payload.action === "change_course" && typeof payload.bookingId === "string") {
-        await this.handleChangeCourseStart(parent.id, message.peer_id, payload.bookingId);
+        if (payload.action === "change_date" && typeof payload.bookingId === "string") {
+          await this.handleChangeDateStart(parent.id, message.peer_id, payload.bookingId);
+          return;
+        }
         return;
       }
-      if (payload.action === "change_date" && typeof payload.bookingId === "string") {
-        await this.handleChangeDateStart(parent.id, message.peer_id, payload.bookingId);
-        return;
-      }
-      return;
-    }
 
-    switch (session.state) {
+      stateAfter = await this.handleState(parent.id, message.peer_id, session.state, draft, text, payload);
+    } catch (error) {
+      await this.log.write("message_processing_error", {
+        eventKey,
+        fromId: message.from_id,
+        peerId: message.peer_id,
+        stateBefore: session.state,
+        error: this.errorMessage(error)
+      });
+      await this.messages.sendText(message.peer_id, "Не получилось обработать сообщение. Я уже записал ошибку в лог.");
+      throw error;
+    } finally {
+      const freshSession = await this.getSession(parent.id);
+      await this.log.write("message_processing_finish", {
+        eventKey,
+        fromId: message.from_id,
+        peerId: message.peer_id,
+        durationMs: Date.now() - startedAt,
+        stateBefore: session.state,
+        stateAfter: freshSession.state ?? stateAfter,
+        draftAfter: freshSession.draft
+      });
+    }
+  }
+
+  private async handleState(
+    parentId: string,
+    peerId: number,
+    state: string,
+    draft: SessionDraft,
+    text: string,
+    payload: Record<string, unknown>
+  ): Promise<string> {
+    switch (state) {
       case "idle":
-        await this.messages.sendMainMenu(message.peer_id);
-        return;
+        await this.messages.sendMainMenu(peerId);
+        return state;
       case "awaiting_parent_name":
-        await this.handleParentName(parent.id, message.peer_id, draft, text);
-        return;
+        await this.handleParentName(parentId, peerId, draft, text);
+        return "awaiting_phone";
       case "awaiting_phone":
-        await this.handlePhone(parent.id, message.peer_id, draft, text);
-        return;
+        await this.handlePhone(parentId, peerId, draft, text);
+        return "awaiting_children_count";
       case "awaiting_children_count":
-        await this.handleChildrenCount(parent.id, message.peer_id, draft, text);
-        return;
+        await this.handleChildrenCount(parentId, peerId, draft, text);
+        return "awaiting_child_name";
       case "awaiting_child_name":
-        await this.handleChildName(parent.id, message.peer_id, draft, text);
-        return;
+        await this.handleChildName(parentId, peerId, draft, text);
+        return "awaiting_child_age";
       case "awaiting_child_age":
-        await this.handleChildAge(parent.id, message.peer_id, draft, text);
-        return;
+        await this.handleChildAge(parentId, peerId, draft, text);
+        return "awaiting_branch";
       case "awaiting_branch":
-        await this.handleBranch(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleBranch(parentId, peerId, draft, payload, text);
+        return "awaiting_course";
       case "awaiting_course":
-        await this.handleCourse(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleCourse(parentId, peerId, draft, payload, text);
+        return "awaiting_course_confirm";
       case "awaiting_course_confirm":
-        await this.handleCourseConfirm(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleCourseConfirm(parentId, peerId, draft, payload, text);
+        return "awaiting_lesson";
       case "awaiting_lesson":
-        await this.handleLesson(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleLesson(parentId, peerId, draft, payload, text);
+        return "order_ready";
       case "change_course_select":
-        await this.handleChangeCourseSelection(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleChangeCourseSelection(parentId, peerId, draft, payload, text);
+        return "change_course_confirm";
       case "change_course_confirm":
-        await this.handleChangeCourseConfirm(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleChangeCourseConfirm(parentId, peerId, draft, payload, text);
+        return "change_lesson_select";
       case "change_lesson_select":
-        await this.handleChangeLessonSelection(parent.id, message.peer_id, draft, payload);
-        return;
+        await this.handleChangeLessonSelection(parentId, peerId, draft, payload, text);
+        return "idle";
       case "order_ready":
-        await this.messages.sendText(message.peer_id, "Заказ уже собран. Выберите оплату онлайн или в филиале.");
-        return;
+        await this.messages.sendText(peerId, "Заказ уже собран. Выберите оплату онлайн или в филиале.");
+        return state;
       default:
-        await this.setSession(parent.id, "idle", {});
-        await this.messages.sendMainMenu(message.peer_id);
+        await this.setSession(parentId, "idle", {});
+        await this.messages.sendMainMenu(peerId);
+        return "idle";
     }
   }
 
@@ -176,8 +267,9 @@ export class VkBotService {
   }
 
   private async handlePhone(parentId: string, peerId: number, draft: SessionDraft, text: string) {
-    if (text.replace(/\D/g, "").length < 10) {
-      await this.messages.sendText(peerId, "Похоже, в телефоне не хватает цифр. Напишите номер еще раз.");
+    const phoneDigits = text.replace(/\D/g, "");
+    if (phoneDigits.length < 10 || phoneDigits.length > 12) {
+      await this.messages.sendText(peerId, "Похоже, в телефоне ошибка. Напишите номер еще раз, например +79991234567.");
       return;
     }
     draft.phone = text;
@@ -229,14 +321,21 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
-    if (payload.action !== "branch" || typeof payload.branchId !== "string") {
+    let branchId = typeof payload.branchId === "string" ? payload.branchId : undefined;
+    if (!branchId && text) {
+      const branch = await this.db.branch.findFirst({ where: { name: { equals: text, mode: "insensitive" } } });
+      branchId = branch?.id;
+    }
+
+    if (!branchId) {
       await this.messages.sendText(peerId, "Выберите филиал кнопкой.");
       return;
     }
 
-    draft.currentChild = { ...(draft.currentChild ?? {}), branchId: payload.branchId };
+    draft.currentChild = { ...(draft.currentChild ?? {}), branchId };
     await this.setSession(parentId, "awaiting_course", draft);
     const age = draft.currentChild.age;
     if (!age) return;
@@ -247,15 +346,16 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
     const age = draft.currentChild?.age;
-    if (!age || payload.action !== "course_option" || typeof payload.option !== "string") {
+    const option = this.resolvePrimaryOption(payload, text);
+    if (!age || !option) {
       await this.messages.sendText(peerId, "Выберите курс кнопкой.");
       return;
     }
 
-    const option = payload.option as Parameters<CourseRouterService["resolveCourse"]>[1];
     const resolution = this.courseRouter.resolveCourse(age, option);
     if (resolution.kind === "needs_subchoice") {
       draft.selectedOption = option;
@@ -271,29 +371,28 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
     if (payload.action === "course_subchoice") {
       const age = draft.currentChild?.age;
       const option = draft.selectedOption;
-      if (!age || !option || typeof payload.subChoice !== "string") return;
-      const resolution = this.courseRouter.resolveCourse(
-        age,
-        option as Parameters<CourseRouterService["resolveCourse"]>[1],
-        payload.subChoice as Parameters<CourseRouterService["resolveCourse"]>[2]
-      );
+      const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
+      if (!age || !option || !subChoice) return;
+      const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.setCourseAndAskConfirm(parentId, peerId, draft, resolution.courseCode);
       }
       return;
     }
 
-    if (payload.action !== "course_confirm") {
+    const accepted = this.resolveCourseConfirm(payload, text);
+    if (accepted === null) {
       await this.messages.sendText(peerId, "Подтвердите курс кнопкой.");
       return;
     }
 
-    if (payload.accepted === false) {
+    if (!accepted) {
       await this.setSession(parentId, "awaiting_course", draft);
       const age = draft.currentChild?.age;
       if (age) await this.messages.sendCourseOptions(peerId, age, this.courseRouter.getAvailableOptions(age));
@@ -312,11 +411,7 @@ export class VkBotService {
       const list = await this.booking.getAvailableLessons(branchId, courseCode);
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
-      await this.messages.sendKeyboard(
-        peerId,
-        list.lessonsText,
-        this.messages.buildLessonButtons(list.lessons)
-      );
+      await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
       await this.messages.sendText(peerId, `Не получилось получить даты занятий: ${this.errorMessage(error)}`);
     }
@@ -326,14 +421,16 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
-    if (payload.action !== "lesson" || typeof payload.lessonId !== "number") {
+    const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
+    if (!lessonId) {
       await this.messages.sendText(peerId, "Выберите дату кнопкой с номером.");
       return;
     }
 
-    const selected = draft.availableLessons?.find((lesson) => lesson.id === payload.lessonId);
+    const selected = draft.availableLessons?.find((lesson) => lesson.id === lessonId);
     const child = draft.currentChild;
     if (!selected || !child?.name || !child.age || !child.branchId || !child.courseCode) {
       await this.messages.sendText(peerId, "Не хватает данных для записи. Начнем заново.");
@@ -393,12 +490,11 @@ export class VkBotService {
 
     await this.messages.sendText(peerId, `${draft.parentName ?? "Здравствуйте"}, рекомендуем вам курс ${course.title}!`);
     await this.messages.sendText(peerId, course.description);
-    await this.messages.sendText(peerId, `Полное описание программы и модулей вы сможете найти по ссылке ниже:\n${branch.baseUrl}${course.defaultUrl}`);
-    await this.messages.sendKeyboard(
+    await this.messages.sendText(
       peerId,
-      "Устраивает ли вас курс?",
-      this.messages.buildCourseConfirmButtons()
+      `Полное описание программы и модулей вы сможете найти по ссылке ниже:\n${branch.baseUrl}${course.defaultUrl}`
     );
+    await this.messages.sendKeyboard(peerId, "Устраивает ли вас курс?", this.messages.buildCourseConfirmButtons());
   }
 
   private async handleOnlinePayment(peerId: number, orderId: string) {
@@ -456,7 +552,8 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
     const booking = await this.db.trialBooking.findFirstOrThrow({
       where: { id: draft.changeBookingId, child: { parentId } },
@@ -465,24 +562,21 @@ export class VkBotService {
     const age = booking.child.age;
     if (payload.action === "course_subchoice") {
       const option = draft.selectedOption;
-      if (!age || !option || typeof payload.subChoice !== "string") return;
-      const resolution = this.courseRouter.resolveCourse(
-        age,
-        option as Parameters<CourseRouterService["resolveCourse"]>[1],
-        payload.subChoice as Parameters<CourseRouterService["resolveCourse"]>[2]
-      );
+      const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
+      if (!age || !option || !subChoice) return;
+      const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.askChangeCourseConfirm(parentId, peerId, draft.changeBookingId!, resolution.courseCode);
       }
       return;
     }
 
-    if (!age || payload.action !== "course_option" || typeof payload.option !== "string") {
+    const option = this.resolvePrimaryOption(payload, text);
+    if (!age || !option) {
       await this.messages.sendText(peerId, "Выберите новый курс кнопкой.");
       return;
     }
 
-    const option = payload.option as Parameters<CourseRouterService["resolveCourse"]>[1];
     const resolution = this.courseRouter.resolveCourse(age, option);
     if (resolution.kind === "needs_subchoice") {
       await this.setSession(parentId, "change_course_select", {
@@ -500,7 +594,8 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
     if (payload.action === "course_subchoice") {
       const booking = await this.db.trialBooking.findFirstOrThrow({
@@ -509,24 +604,22 @@ export class VkBotService {
       });
       const age = booking.child.age;
       const option = draft.selectedOption;
-      if (!age || !option || typeof payload.subChoice !== "string") return;
-      const resolution = this.courseRouter.resolveCourse(
-        age,
-        option as Parameters<CourseRouterService["resolveCourse"]>[1],
-        payload.subChoice as Parameters<CourseRouterService["resolveCourse"]>[2]
-      );
+      const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
+      if (!age || !option || !subChoice) return;
+      const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.askChangeCourseConfirm(parentId, peerId, draft.changeBookingId!, resolution.courseCode);
       }
       return;
     }
 
-    if (payload.action !== "course_confirm") {
+    const accepted = this.resolveCourseConfirm(payload, text);
+    if (accepted === null) {
       await this.messages.sendText(peerId, "Подтвердите новый курс кнопкой.");
       return;
     }
 
-    if (payload.accepted === false) {
+    if (!accepted) {
       await this.handleChangeCourseStart(parentId, peerId, draft.changeBookingId!);
       return;
     }
@@ -538,14 +631,16 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    text: string
   ) {
-    if (payload.action !== "lesson" || typeof payload.lessonId !== "number") {
+    const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
+    if (!lessonId) {
       await this.messages.sendText(peerId, "Выберите новую дату кнопкой с номером.");
       return;
     }
 
-    const selected = draft.availableLessons?.find((lesson) => lesson.id === payload.lessonId);
+    const selected = draft.availableLessons?.find((lesson) => lesson.id === lessonId);
     if (!selected || !draft.changeBookingId) {
       await this.messages.sendText(peerId, "Не удалось найти выбранную дату.");
       return;
@@ -582,7 +677,10 @@ export class VkBotService {
       console.error("Failed to sync changed booking with MoyKlass", error);
     });
     await this.setSession(parentId, "idle", {});
-    await this.messages.sendText(peerId, "Готово, запись обновлена. Если занятие уже было оплачено, повторно платить не нужно.");
+    await this.messages.sendText(
+      peerId,
+      "Готово, запись обновлена. Если занятие уже было оплачено, повторно платить не нужно."
+    );
     await this.renderChildrenMenu(parentId, peerId);
   }
 
@@ -663,6 +761,69 @@ export class VkBotService {
       update: { state, draft: draft as Prisma.InputJsonValue },
       create: { parentId, state, draft: draft as Prisma.InputJsonValue }
     });
+  }
+
+  private resolvePrimaryOption(payload: Record<string, unknown>, text: string): PrimaryCourseOption | null {
+    if (payload.action === "course_option" && typeof payload.option === "string") {
+      return payload.option as PrimaryCourseOption;
+    }
+
+    const normalized = text.trim().toLowerCase();
+    const map: Record<string, PrimaryCourseOption> = {
+      "с чего начать": "start",
+      робототехника: "robotics",
+      математика: "math",
+      дизайн: "design",
+      "создание игр": "games",
+      программирование: "programming"
+    };
+    return map[normalized] ?? null;
+  }
+
+  private resolveCourseConfirm(payload: Record<string, unknown>, text: string): boolean | null {
+    if (payload.action === "course_confirm" && typeof payload.accepted === "boolean") return payload.accepted;
+    const normalized = text.trim().toLowerCase();
+    if (normalized === "да, записываем" || normalized === "да" || normalized === "записываем") return true;
+    if (normalized.startsWith("нет")) return false;
+    return null;
+  }
+
+  private resolveLessonId(
+    payload: Record<string, unknown>,
+    text: string,
+    lessons?: Array<{ id: number }>
+  ): number | null {
+    if (payload.action === "lesson" && typeof payload.lessonId === "number") return payload.lessonId;
+    const index = Number.parseInt(text, 10);
+    if (!Number.isInteger(index) || index < 1) return null;
+    return lessons?.[index - 1]?.id ?? null;
+  }
+
+  private isStartCommand(text: string): boolean {
+    return /^(начать|старт|записаться|записать|запись)$/i.test(text.trim());
+  }
+
+  private isDuplicate(eventKey: string): boolean {
+    const now = Date.now();
+    for (const [key, expiresAt] of this.processedEvents.entries()) {
+      if (expiresAt <= now) this.processedEvents.delete(key);
+    }
+
+    if (this.processedEvents.has(eventKey)) return true;
+    this.processedEvents.set(eventKey, now + 10 * 60_000);
+    return false;
+  }
+
+  private getEventKey(update: VkIncomingUpdate): string {
+    const message = update.object?.message;
+    if (update.event_id) return `event:${update.event_id}`;
+    if (message?.id) return `message:${message.peer_id}:${message.id}`;
+    if (message?.conversation_message_id) {
+      return `conversation:${message.peer_id}:${message.conversation_message_id}`;
+    }
+    return `fallback:${message?.peer_id}:${message?.from_id}:${message?.date}:${message?.text}:${JSON.stringify(
+      message?.payload ?? {}
+    )}`;
   }
 
   private toDraft(value: Prisma.JsonValue): SessionDraft {

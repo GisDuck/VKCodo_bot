@@ -2,6 +2,7 @@ import { Keyboard, VK } from "vk-io";
 import { env } from "../config/env.js";
 import { COURSE_OPTION_LABELS, TRIAL_INTRO_MESSAGES } from "../domain/catalog.js";
 import type { CourseOption } from "./course-router.service.js";
+import { VkEventLogService } from "./vk-event-log.service.js";
 
 type Button = {
   label: string;
@@ -11,6 +12,7 @@ type Button = {
 
 export class VkMessageService {
   private readonly vk = new VK({ token: env.VK_GROUP_TOKEN || "not-configured" });
+  private readonly log = new VkEventLogService();
 
   async sendText(peerId: number, message: string): Promise<void> {
     await this.send(peerId, message);
@@ -122,6 +124,12 @@ export class VkMessageService {
   }
 
   private async send(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
+    await this.log.write("vk_send", {
+      peerId,
+      message,
+      hasKeyboard: Boolean(keyboard)
+    });
+
     if (!env.VK_GROUP_TOKEN) {
       console.log("[vk:dry-run]", { peerId, message, keyboard: keyboard?.toString() });
       return;
@@ -129,7 +137,7 @@ export class VkMessageService {
 
     await this.vk.api.messages.send({
       peer_id: peerId,
-      random_id: Date.now(),
+      random_id: Date.now() + Math.floor(Math.random() * 1000),
       message,
       keyboard
     });

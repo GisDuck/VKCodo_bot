@@ -95,6 +95,9 @@ services:
       PAYMENT_EXPIRES_MINUTES: ${PAYMENT_EXPIRES_MINUTES:-30}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      LOG_DIR: /app/logs
+    volumes:
+      - ./logs:/app/logs
     depends_on:
       postgres:
         condition: service_healthy
