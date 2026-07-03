@@ -133,6 +133,10 @@ export class VkBotService {
       }
 
       if (payload.action === "edit_field" && typeof payload.field === "string") {
+        if (!this.isEditFieldAllowed(session.state, payload.field)) {
+          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Продолжим с текущего шага.");
+          return;
+        }
         await this.handleEditField(parent.id, message.peer_id, draft, payload.field);
         return;
       }
@@ -271,7 +275,7 @@ export class VkBotService {
     draft.parentName = text;
     await this.db.parent.update({ where: { id: parentId }, data: { name: text } });
     await this.setSession(parentId, "awaiting_phone", draft);
-    await this.messages.sendKeyboard(
+    await this.messages.sendInlineKeyboard(
       peerId,
       `${text}, приятно познакомиться! Подскажите, пожалуйста, номер телефона для записи.`,
       this.buildEditButtons(draft, ["parentName"])
@@ -286,36 +290,29 @@ export class VkBotService {
         return;
       case "phone":
         await this.setSession(parentId, "awaiting_phone", draft);
-        await this.messages.sendKeyboard(
-          peerId,
-          "Напишите новый номер телефона для записи.",
-          this.buildEditButtons(draft, ["parentName"])
-        );
+        await this.messages.sendText(peerId, "Напишите новый номер телефона для записи.");
         return;
       case "childrenCount":
         await this.setSession(parentId, "awaiting_children_count", draft);
-        await this.messages.sendKeyboard(
+        await this.messages.sendText(
           peerId,
-          "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
-          this.buildEditButtons(draft, ["parentName", "phone"])
+          "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)"
         );
         return;
       case "childName":
         await this.setSession(parentId, "awaiting_child_name", draft);
-        await this.messages.sendKeyboard(
+        await this.messages.sendText(
           peerId,
-          draft.childrenCount === 1 ? "Как зовут вашего ребенка?" : "Как зовут ребенка?",
-          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount"])
+          draft.childrenCount === 1 ? "Как зовут вашего ребенка?" : "Как зовут ребенка?"
         );
         return;
       case "childAge":
         await this.setSession(parentId, "awaiting_child_age", draft);
-        await this.messages.sendKeyboard(
+        await this.messages.sendText(
           peerId,
           draft.currentChild?.name
             ? `${draft.currentChild.name} найдет много интересного в нашей школе! А сколько ему/ей лет?`
-            : "Сколько лет ребенку?",
-          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName"])
+            : "Сколько лет ребенку?"
         );
         return;
       case "branch": {
@@ -323,8 +320,7 @@ export class VkBotService {
         const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
         await this.messages.sendBranchOptions(
           peerId,
-          branches,
-          this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge"])
+          branches
         );
         return;
       }
@@ -342,10 +338,10 @@ export class VkBotService {
     draft.phone = text;
     await this.db.parent.update({ where: { id: parentId }, data: { phone: text } });
     await this.setSession(parentId, "awaiting_children_count", draft);
-    await this.messages.sendKeyboard(
+    await this.messages.sendInlineKeyboard(
       peerId,
       "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
-      this.buildEditButtons(draft, ["parentName", "phone"])
+      this.buildEditButtons(draft, ["phone"])
     );
   }
 
@@ -360,12 +356,12 @@ export class VkBotService {
     draft.bookingIds = [];
     draft.currentChild = {};
     await this.setSession(parentId, "awaiting_child_name", draft);
-    await this.messages.sendKeyboard(
+    await this.messages.sendInlineKeyboard(
       peerId,
       count === 1
         ? `${draft.parentName ?? ""}, приятно познакомиться! Как зовут вашего ребенка?`.trim()
         : `${draft.parentName ?? ""}, приятно познакомиться! Как зовут первого ребенка?`.trim(),
-      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount"])
+      this.buildEditButtons(draft, ["childrenCount"])
     );
   }
 
@@ -376,10 +372,10 @@ export class VkBotService {
     }
     draft.currentChild = { name: text };
     await this.setSession(parentId, "awaiting_child_age", draft);
-    await this.messages.sendKeyboard(
+    await this.messages.sendInlineKeyboard(
       peerId,
       `${text} найдет много интересного в нашей школе! А сколько ему/ей лет?`,
-      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName"])
+      this.buildEditButtons(draft, ["childName"])
     );
   }
 
@@ -398,7 +394,7 @@ export class VkBotService {
     await this.messages.sendBranchOptions(
       peerId,
       branches,
-      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge"])
+      this.buildEditButtons(draft, ["childAge"])
     );
   }
 
@@ -428,7 +424,7 @@ export class VkBotService {
       peerId,
       age,
       this.courseRouter.getAvailableOptions(age),
-      this.buildEditButtons(draft, ["parentName", "phone", "childrenCount", "childName", "childAge", "branch"])
+      this.buildEditButtons(draft, ["branch"])
     );
   }
 
@@ -877,6 +873,19 @@ export class VkBotService {
         .filter((field) => labels[field] && hasValue[field])
         .map((field) => ({ field, label: labels[field] }))
     );
+  }
+
+  private isEditFieldAllowed(state: string, field: string): boolean {
+    const allowedStateByField: Record<string, string> = {
+      parentName: "awaiting_phone",
+      phone: "awaiting_children_count",
+      childrenCount: "awaiting_child_name",
+      childName: "awaiting_child_age",
+      childAge: "awaiting_branch",
+      branch: "awaiting_course"
+    };
+
+    return allowedStateByField[field] === state;
   }
 
   private resolvePrimaryOption(payload: Record<string, unknown>, text: string): PrimaryCourseOption | null {

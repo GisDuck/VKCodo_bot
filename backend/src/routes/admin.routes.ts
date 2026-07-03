@@ -345,6 +345,8 @@ export async function adminRoutes(app: FastifyInstance) {
     const price = await getSetting("trialPriceRubles", 600);
     const referralPrice = await getSetting("referralTrialPriceRubles", 300);
     const testMode = await getSetting("paymentTestMode", env.PAYMENT_TEST_MODE);
+    const developerMode = await getSetting("developerMode", false);
+    const developerTodayDate = await getSetting("developerTodayDate", todayInputValue());
 
     return html(
       reply,
@@ -361,6 +363,12 @@ export async function adminRoutes(app: FastifyInstance) {
             <option value="true" ${testMode ? "selected" : ""}>Включена</option>
             <option value="false" ${!testMode ? "selected" : ""}>Выключена</option>
           </select></label>
+          <label>Режим разработчика <select name="developerMode">
+            <option value="false" ${!developerMode ? "selected" : ""}>Выключен</option>
+            <option value="true" ${developerMode ? "selected" : ""}>Включен</option>
+          </select></label>
+          <label>Сегодня в режиме разработчика <input type="date" name="developerTodayDate" value="${escapeHtml(developerTodayDate)}" /></label>
+          <p class="muted">Эта дата используется только когда включен режим разработчика. В обычном режиме бот ищет занятия от реальной сегодняшней даты.</p>
           <button type="submit">Сохранить</button>
         </form>
       </section>
@@ -374,6 +382,8 @@ export async function adminRoutes(app: FastifyInstance) {
     await setSetting("trialPriceRubles", Number.parseInt(body.trialPriceRubles ?? "600", 10));
     await setSetting("referralTrialPriceRubles", Number.parseInt(body.referralTrialPriceRubles ?? "300", 10));
     await setSetting("paymentTestMode", body.paymentTestMode === "true");
+    await setSetting("developerMode", body.developerMode === "true");
+    await setSetting("developerTodayDate", validDateInput(body.developerTodayDate) ? body.developerTodayDate : todayInputValue());
     return reply.redirect("/admin/settings");
   });
 
@@ -685,6 +695,16 @@ function formatDateTime(value: Date): string {
 
 function formatMoney(kopecks: number): string {
   return new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" }).format(kopecks / 100);
+}
+
+function todayInputValue(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function validDateInput(value: string | undefined): value is string {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function escapeHtml(value: unknown): string {

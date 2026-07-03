@@ -9,6 +9,7 @@ import {
 import { env } from "../config/env.js";
 import { TRIAL_LOOKUP_DAYS } from "../domain/catalog.js";
 import { addDays } from "../lib/dates.js";
+import { resolveTodayForDeveloperMode } from "../lib/developer-date.js";
 import { prisma } from "../lib/prisma.js";
 import { LessonFormatService } from "./lesson-format.service.js";
 import { MoyKlassService } from "./moyklass.service.js";
@@ -75,13 +76,23 @@ export class BookingService {
     if (!courseId) throw new Error(`Course mapping for ${courseCode} is not configured`);
 
     const classes = await this.moyKlass.getClasses(branch.moyklassId, courseId);
+    const lookupStartDate = await this.getLessonLookupStartDate();
     const lessons = await this.moyKlass.getLessons({
-      dateFrom: new Date(),
-      dateTo: addDays(new Date(), TRIAL_LOOKUP_DAYS),
+      dateFrom: lookupStartDate,
+      dateTo: addDays(lookupStartDate, TRIAL_LOOKUP_DAYS),
       classIds: classes.map((item) => item.id)
     });
 
     return this.lessonFormatter.buildAvailableLessonList(lessons);
+  }
+
+  private async getLessonLookupStartDate(): Promise<Date> {
+    const [developerMode, developerTodayDate] = await Promise.all([
+      this.db.appSetting.findUnique({ where: { key: "developerMode" } }),
+      this.db.appSetting.findUnique({ where: { key: "developerTodayDate" } })
+    ]);
+
+    return resolveTodayForDeveloperMode(developerMode?.value === true, developerTodayDate?.value);
   }
 
   async createDraftBooking(input: BookingDraftInput) {

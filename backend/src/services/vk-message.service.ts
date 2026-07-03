@@ -22,6 +22,10 @@ export class VkMessageService {
     await this.send(peerId, message, this.buildKeyboard(buttons));
   }
 
+  async sendInlineKeyboard(peerId: number, message: string, buttons: Button[]): Promise<void> {
+    await this.send(peerId, message, this.buildKeyboard(buttons, true));
+  }
+
   async sendTrialIntro(peerId: number): Promise<void> {
     for (const message of TRIAL_INTRO_MESSAGES) {
       await this.sendText(peerId, message);
@@ -46,7 +50,8 @@ export class VkMessageService {
     options: CourseOption[],
     editButtons: Button[]
   ): Promise<void> {
-    await this.sendKeyboard(
+    await (editButtons.length > 0 ? this.sendInlineKeyboard : this.sendKeyboard).call(
+      this,
       peerId,
       "Какое направление вас интересует?",
       [
@@ -87,7 +92,8 @@ export class VkMessageService {
     branches: Array<{ id: string; name: string }>,
     editButtons: Button[] = []
   ): Promise<void> {
-    await this.sendKeyboard(
+    await (editButtons.length > 0 ? this.sendInlineKeyboard : this.sendKeyboard).call(
+      this,
       peerId,
       "По какому адресу Вам удобнее будет нас посетить?",
       [
@@ -145,8 +151,9 @@ export class VkMessageService {
     return buttons;
   }
 
-  private buildKeyboard(buttons: Button[]) {
+  private buildKeyboard(buttons: Button[], inline = false) {
     const builder = Keyboard.builder();
+    if (inline) builder.inline();
     buttons.forEach((button, index) => {
       if (index > 0 && index % 2 === 0) builder.row();
       builder.textButton({
@@ -155,7 +162,7 @@ export class VkMessageService {
         color: button.color ?? "secondary"
       });
     });
-    return builder.oneTime();
+    return inline ? builder : builder.oneTime();
   }
 
   private async send(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
