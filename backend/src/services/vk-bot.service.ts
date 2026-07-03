@@ -141,6 +141,11 @@ export class VkBotService {
         return;
       }
 
+      if (payload.action === "retry_lessons") {
+        await this.handleRetryLessons(parent.id, message.peer_id, session.state, draft);
+        return;
+      }
+
       if (payload.action === "pay_online" && typeof payload.orderId === "string") {
         await this.handleOnlinePayment(message.peer_id, payload.orderId);
         return;
@@ -393,8 +398,7 @@ export class VkBotService {
     const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
     await this.messages.sendBranchOptions(
       peerId,
-      branches,
-      this.buildEditButtons(draft, ["childAge"])
+      branches
     );
   }
 
@@ -420,11 +424,10 @@ export class VkBotService {
     await this.setSession(parentId, "awaiting_course", draft);
     const age = draft.currentChild.age;
     if (!age) return;
-    await this.messages.sendCourseOptionsWithEdits(
+    await this.messages.sendCourseOptions(
       peerId,
       age,
-      this.courseRouter.getAvailableOptions(age),
-      this.buildEditButtons(draft, ["branch"])
+      this.courseRouter.getAvailableOptions(age)
     );
   }
 
@@ -497,6 +500,10 @@ export class VkBotService {
       const list = await this.booking.getAvailableLessons(branchId, courseCode);
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
+      if (list.lessons.length === 0) {
+        await this.sendNoLessonsMessage(peerId);
+        return;
+      }
       await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
       await this.messages.sendText(peerId, `Не получилось получить даты занятий: ${this.errorMessage(error)}`);
@@ -802,10 +809,51 @@ export class VkBotService {
         changeCourseCode: courseCode,
         availableLessons: list.lessons
       });
+      if (list.lessons.length === 0) {
+        await this.sendNoLessonsMessage(peerId);
+        return;
+      }
       await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
       await this.messages.sendText(peerId, `Не получилось получить новые даты: ${this.errorMessage(error)}`);
     }
+  }
+
+  private async handleRetryLessons(parentId: string, peerId: number, state: string, draft: SessionDraft) {
+    if (state === "change_lesson_select" && draft.changeBookingId && draft.changeCourseCode) {
+      await this.askChangeLesson(parentId, peerId, draft.changeBookingId, draft.changeCourseCode);
+      return;
+    }
+
+    const branchId = draft.currentChild?.branchId;
+    const courseCode = draft.currentChild?.courseCode;
+    if (state !== "awaiting_lesson" || !branchId || !courseCode) {
+      await this.messages.sendText(peerId, "Эта проверка уже устарела. Продолжим с текущего шага.");
+      return;
+    }
+
+    try {
+      const list = await this.booking.getAvailableLessons(branchId, courseCode);
+      draft.availableLessons = list.lessons;
+      await this.setSession(parentId, "awaiting_lesson", draft);
+
+      if (list.lessons.length === 0) {
+        await this.sendNoLessonsMessage(peerId);
+        return;
+      }
+
+      await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
+    } catch (error) {
+      await this.messages.sendText(peerId, `Не получилось получить даты занятий: ${this.errorMessage(error)}`);
+    }
+  }
+
+  private async sendNoLessonsMessage(peerId: number) {
+    await this.messages.sendKeyboard(
+      peerId,
+      "Сейчас нет доступных дат для занятий. Попробуйте позже или нажмите кнопку, чтобы проверить еще раз.",
+      this.messages.buildRetryLessonsButtons()
+    );
   }
 
   private async renderChildrenMenu(parentId: string, peerId: number) {

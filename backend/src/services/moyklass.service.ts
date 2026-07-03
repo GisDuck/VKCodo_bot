@@ -2,6 +2,7 @@ import { env } from "../config/env.js";
 import { DEFAULT_MANAGER_ID } from "../domain/catalog.js";
 import { approximateBirthdayFromAge, toIsoDate } from "../lib/dates.js";
 import type { MoyKlassLesson } from "./lesson-format.service.js";
+import { MoyKlassLogService } from "./moyklass-log.service.js";
 
 type MoyKlassClass = {
   id: number;
@@ -45,6 +46,7 @@ type CreatePaymentInput = {
 export class MoyKlassService {
   private accessToken: string | null = null;
   private accessTokenExpiresAt = 0;
+  private readonly log = new MoyKlassLogService();
 
   constructor(
     private readonly baseUrl = env.MOYKLASS_BASE_URL,
@@ -170,25 +172,40 @@ export class MoyKlassService {
     }
 
     const token = await this.getAccessToken();
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: init?.method ?? "GET",
+    const method = init?.method ?? "GET";
+    const url = `${this.baseUrl}${path}`;
+    const startedAt = Date.now();
+    const response = await fetch(url, {
+      method,
       headers: {
         "x-access-token": token,
         "Content-Type": "application/json"
       },
       body: init?.body === undefined ? undefined : JSON.stringify(init.body)
     });
+    const responseText = await response.text();
+    const responseBody = parseBody(responseText);
+
+    await this.log.write({
+      event: "moyklass_request",
+      method,
+      path,
+      url,
+      requestBody: init?.body ?? null,
+      responseStatus: response.status,
+      responseBody,
+      durationMs: Date.now() - startedAt
+    });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`MoyKlass ${init?.method ?? "GET"} ${path} failed: ${response.status} ${text}`);
+      throw new Error(`MoyKlass ${method} ${path} failed: ${response.status} ${responseText}`);
     }
 
     if (response.status === 204) {
       return undefined as T;
     }
 
-    return (await response.json()) as T;
+    return responseBody as T;
   }
 
   private async getAccessToken(): Promise<string> {
@@ -196,18 +213,34 @@ export class MoyKlassService {
       return this.accessToken;
     }
 
-    const response = await fetch(`${this.baseUrl}/auth/getToken`, {
-      method: "POST",
+    const method = "POST";
+    const path = "/auth/getToken";
+    const url = `${this.baseUrl}${path}`;
+    const startedAt = Date.now();
+    const response = await fetch(url, {
+      method,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ apiKey: this.apiKey })
     });
+    const responseText = await response.text();
+    const responseBody = parseBody(responseText);
+
+    await this.log.write({
+      event: "moyklass_request",
+      method,
+      path,
+      url,
+      requestBody: { apiKey: maskSecret(this.apiKey) },
+      responseStatus: response.status,
+      responseBody: maskAuthResponse(responseBody),
+      durationMs: Date.now() - startedAt
+    });
 
     if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`MoyKlass auth failed: ${response.status} ${text}`);
+      throw new Error(`MoyKlass auth failed: ${response.status} ${responseText}`);
     }
 
-    const data = (await response.json()) as { accessToken?: string; expiresIn?: number };
+    const data = responseBody as { accessToken?: string; expiresIn?: number };
     if (!data.accessToken) {
       throw new Error("MoyKlass auth response does not contain accessToken");
     }
@@ -216,4 +249,26 @@ export class MoyKlassService {
     this.accessTokenExpiresAt = Date.now() + (data.expiresIn ?? 3600) * 1000;
     return this.accessToken;
   }
+}
+
+function parseBody(text: string): unknown {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+function maskSecret(value: string): string {
+  if (value.length <= 4) return "****";
+  return `${value.slice(0, 2)}***${value.slice(-2)}`;
+}
+
+function maskAuthResponse(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  return {
+    ...value,
+    accessToken: "****"
+  };
 }

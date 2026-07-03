@@ -50,8 +50,7 @@ export class VkMessageService {
     options: CourseOption[],
     editButtons: Button[]
   ): Promise<void> {
-    await (editButtons.length > 0 ? this.sendInlineKeyboard : this.sendKeyboard).call(
-      this,
+    await this.sendKeyboard(
       peerId,
       "Какое направление вас интересует?",
       [
@@ -92,8 +91,7 @@ export class VkMessageService {
     branches: Array<{ id: string; name: string }>,
     editButtons: Button[] = []
   ): Promise<void> {
-    await (editButtons.length > 0 ? this.sendInlineKeyboard : this.sendKeyboard).call(
-      this,
+    await this.sendKeyboard(
       peerId,
       "По какому адресу Вам удобнее будет нас посетить?",
       [
@@ -139,6 +137,16 @@ export class VkMessageService {
       payload: { action: "lesson", lessonId: lesson.id, classId: lesson.classId },
       color: "primary" as const
     }));
+  }
+
+  buildRetryLessonsButtons() {
+    return [
+      {
+        label: "Проверить еще раз",
+        payload: { action: "retry_lessons" },
+        color: "primary" as const
+      }
+    ];
   }
 
   buildPaymentButtons(orderId: string, paymentUrl?: string | null) {
