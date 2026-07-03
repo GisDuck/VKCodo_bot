@@ -2,7 +2,10 @@
 .env
 .env.*
 .env.example
-traefik
+
+# Traefik runtime secrets
+traefik/acme/acme.json
+traefik/auth/users
 
 # Dependencies
 node_modules/

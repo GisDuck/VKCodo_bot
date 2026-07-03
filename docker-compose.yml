@@ -3,14 +3,13 @@ networks:
     name: codorobot_network
     driver: bridge
 
-volumes:
-  traefik-letsencrypt:
-
 services:
   traefik:
     image: traefik:v3.4
     container_name: codorobot_traefik
     restart: unless-stopped
+    environment:
+      DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.40}
     command:
       - --api.dashboard=${TRAEFIK_DASHBOARD:-false}
       - --providers.docker=true
@@ -26,7 +25,7 @@ services:
       - "${TRAEFIK_HTTPS_PORT:-443}:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - traefik-letsencrypt:/letsencrypt
+      - ./traefik/acme/acme.json:/letsencrypt/acme.json
     networks:
       - codorobot
 
