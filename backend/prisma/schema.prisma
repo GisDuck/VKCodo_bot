@@ -1,0 +1,202 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ChildStatus {
+  trial
+  active
+  archived
+}
+
+enum BotCourseCode {
+  WEDO
+  MATH_1
+  MATH_2
+  DIGITAL_LITERACY
+  EV3
+  ARDUINO
+  ROBLOX
+  UNITY
+  PYTHON
+  DESIGN
+}
+
+enum BookingStatus {
+  draft
+  awaiting_payment
+  pay_on_site
+  booked
+  cancelled
+}
+
+enum OrderStatus {
+  draft
+  awaiting_payment
+  paid
+  pay_on_site
+  expired_to_pay_on_site
+  cancelled
+}
+
+enum PaymentStatus {
+  pending
+  paid
+  failed
+  expired
+  cancelled
+}
+
+enum PaymentMethod {
+  online
+  on_site
+}
+
+model Parent {
+  id              String       @id @default(cuid())
+  vkUserId        BigInt       @unique
+  name            String?
+  phone           String?
+  referralPayload String?
+  referralApplied Boolean      @default(false)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  children        Child[]
+  orders          Order[]
+  sessions        BotSession[]
+}
+
+model Child {
+  id             String         @id @default(cuid())
+  parentId       String
+  name           String
+  age            Int?
+  moyklassUserId Int?
+  status         ChildStatus    @default(trial)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  parent         Parent         @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  bookings       TrialBooking[]
+  orderItems     OrderItem[]
+}
+
+model Branch {
+  id          String         @id @default(cuid())
+  code        String         @unique
+  name        String
+  address     String
+  moyklassId  Int            @unique
+  baseUrl     String
+  active      Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  bookings    TrialBooking[]
+}
+
+model BotCourse {
+  id          String          @id @default(cuid())
+  code        BotCourseCode   @unique
+  title       String
+  slug        String
+  description String
+  defaultUrl  String
+  active      Boolean         @default(true)
+  mapping     CourseMapping?
+  bookings    TrialBooking[]
+  orderItems  OrderItem[]
+}
+
+model CourseMapping {
+  id               String        @id @default(cuid())
+  botCourseId      String        @unique
+  moyklassCourseId Int
+  yearLabel        String?
+  active           Boolean       @default(true)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  botCourse        BotCourse     @relation(fields: [botCourseId], references: [id], onDelete: Cascade)
+}
+
+model TrialBooking {
+  id                    String        @id @default(cuid())
+  childId               String
+  branchId              String
+  botCourseId           String
+  moyklassClassId       Int?
+  moyklassLessonId      Int?
+  moyklassJoinId        Int?
+  moyklassLessonRecordId Int?
+  lessonDate            DateTime?
+  lessonBeginTime       String?
+  status                BookingStatus @default(draft)
+  priceKopecks          Int           @default(60000)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  child                 Child         @relation(fields: [childId], references: [id], onDelete: Cascade)
+  branch                Branch        @relation(fields: [branchId], references: [id])
+  botCourse             BotCourse     @relation(fields: [botCourseId], references: [id])
+  orderItem             OrderItem?
+}
+
+model Order {
+  id             String        @id @default(cuid())
+  parentId       String
+  status         OrderStatus   @default(draft)
+  totalKopecks   Int           @default(0)
+  expiresAt      DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  parent         Parent        @relation(fields: [parentId], references: [id], onDelete: Cascade)
+  items          OrderItem[]
+  payment        Payment?
+}
+
+model OrderItem {
+  id             String       @id @default(cuid())
+  orderId        String
+  childId        String
+  bookingId      String       @unique
+  botCourseId    String
+  title          String
+  amountKopecks  Int
+  createdAt      DateTime     @default(now())
+  order          Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  child          Child        @relation(fields: [childId], references: [id])
+  booking        TrialBooking @relation(fields: [bookingId], references: [id])
+  botCourse      BotCourse    @relation(fields: [botCourseId], references: [id])
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  orderId          String        @unique
+  method           PaymentMethod
+  status           PaymentStatus @default(pending)
+  realAmountKopecks Int
+  chargedKopecks    Int
+  tbankPaymentId    String?
+  tbankOrderId      String?
+  paymentUrl        String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  order             Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model BotSession {
+  id        String   @id @default(cuid())
+  parentId  String   @unique
+  state     String
+  draft     Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  parent    Parent   @relation(fields: [parentId], references: [id], onDelete: Cascade)
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}

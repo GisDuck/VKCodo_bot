@@ -1,0 +1,116 @@
+networks:
+  codorobot:
+    name: codorobot_network
+    driver: bridge
+
+volumes:
+  traefik-letsencrypt:
+
+services:
+  traefik:
+    image: traefik:v3.4
+    container_name: codorobot_traefik
+    restart: unless-stopped
+    command:
+      - --api.dashboard=${TRAEFIK_DASHBOARD:-false}
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.letsencrypt.acme.email=${TRAEFIK_ACME_EMAIL:-admin@codorobot.ru}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-80}:80"
+      - "${TRAEFIK_HTTPS_PORT:-443}:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-letsencrypt:/letsencrypt
+    networks:
+      - codorobot
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: codorobot_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-codorobot_db}
+      POSTGRES_USER: ${POSTGRES_USER:-codorobot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codorobot_password}
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    networks:
+      - codorobot
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: codorobot_backend
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      NODE_ENV: ${NODE_ENV:-production}
+      BASE_URL: ${BASE_URL:-http://localhost}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-codorobot}:${POSTGRES_PASSWORD:-codorobot_password}@postgres:5432/${POSTGRES_DB:-codorobot_db}?schema=public
+      VK_GROUP_TOKEN: ${VK_GROUP_TOKEN:-}
+      VK_CONFIRMATION_CODE: ${VK_CONFIRMATION_CODE:-}
+      VK_SECRET: ${VK_SECRET:-}
+      VK_USE_LONG_POLL: ${VK_USE_LONG_POLL:-false}
+      MOYKLASS_API_KEY: ${MOYKLASS_API_KEY:-}
+      MOYKLASS_BASE_URL: ${MOYKLASS_BASE_URL:-https://api.moyklass.com/v1/company}
+      MOYKLASS_MANAGER_ID: ${MOYKLASS_MANAGER_ID:-221231}
+      TBANK_TERMINAL_KEY: ${TBANK_TERMINAL_KEY:-}
+      TBANK_PASSWORD: ${TBANK_PASSWORD:-}
+      TBANK_BASE_URL: ${TBANK_BASE_URL:-https://securepay.tinkoff.ru/v2}
+      TBANK_NOTIFICATION_URL: ${TBANK_NOTIFICATION_URL:-}
+      PAYMENT_TEST_MODE: ${PAYMENT_TEST_MODE:-true}
+      PAYMENT_EXPIRES_MINUTES: ${PAYMENT_EXPIRES_MINUTES:-30}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - codorobot
+    expose:
+      - "3000"
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=codorobot_network
+      - traefik.http.services.codorobot-backend.loadbalancer.server.port=3000
+      - traefik.http.routers.codorobot-backend-http.rule=Host(`${BASE_HOST:-localhost}`)
+      - traefik.http.routers.codorobot-backend-http.entrypoints=web
+      - traefik.http.routers.codorobot-backend-http.service=codorobot-backend
+      - traefik.http.routers.codorobot-backend-https.rule=Host(`${BASE_HOST:-localhost}`)
+      - traefik.http.routers.codorobot-backend-https.entrypoints=websecure
+      - traefik.http.routers.codorobot-backend-https.tls=true
+      - traefik.http.routers.codorobot-backend-https.tls.certresolver=letsencrypt
+      - traefik.http.routers.codorobot-backend-https.service=codorobot-backend
+
+  prisma-studio:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    container_name: codorobot_prisma_studio
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-codorobot}:${POSTGRES_PASSWORD:-codorobot_password}@postgres:5432/${POSTGRES_DB:-codorobot_db}?schema=public
+    command: >
+      sh -lc "npx prisma studio --schema prisma/schema.prisma --hostname 0.0.0.0 --port 5555"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - codorobot
+    ports:
+      - "127.0.0.1:5555:5555"
