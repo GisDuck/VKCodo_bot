@@ -76,23 +76,29 @@ export class BookingService {
     if (!courseId) throw new Error(`Course mapping for ${courseCode} is not configured`);
 
     const classes = await this.moyKlass.getClasses(branch.moyklassId, courseId);
-    const lookupStartDate = await this.getLessonLookupStartDate();
+    const lookupSettings = await this.getLessonLookupSettings();
     const lessons = await this.moyKlass.getLessons({
-      dateFrom: lookupStartDate,
-      dateTo: addDays(lookupStartDate, TRIAL_LOOKUP_DAYS),
+      dateFrom: lookupSettings.startDate,
+      dateTo: addDays(lookupSettings.startDate, TRIAL_LOOKUP_DAYS),
       classIds: classes.map((item) => item.id)
     });
 
-    return this.lessonFormatter.buildAvailableLessonList(lessons);
+    return this.lessonFormatter.buildAvailableLessonList(lessons, {
+      includeUnavailable: lookupSettings.developerMode
+    });
   }
 
-  private async getLessonLookupStartDate(): Promise<Date> {
+  private async getLessonLookupSettings(): Promise<{ startDate: Date; developerMode: boolean }> {
     const [developerMode, developerTodayDate] = await Promise.all([
       this.db.appSetting.findUnique({ where: { key: "developerMode" } }),
       this.db.appSetting.findUnique({ where: { key: "developerTodayDate" } })
     ]);
+    const enabled = developerMode?.value === true;
 
-    return resolveTodayForDeveloperMode(developerMode?.value === true, developerTodayDate?.value);
+    return {
+      startDate: resolveTodayForDeveloperMode(enabled, developerTodayDate?.value),
+      developerMode: enabled
+    };
   }
 
   async createDraftBooking(input: BookingDraftInput) {

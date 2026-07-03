@@ -47,4 +47,12 @@ describe("LessonFormatService", () => {
     expect(result.lessons).toHaveLength(0);
     expect(result.maxLessonNumber).toBeNull();
   });
+
+  it("can include unavailable lessons for developer mode", () => {
+    const result = service.buildAvailableLessonList([lesson(1, "2026-07-06", "15:00", 1)], {
+      includeUnavailable: true
+    });
+    expect(result.lessons).toHaveLength(1);
+    expect(result.lessonsText).toContain("1. 6 июля в 15:00 понедельник");
+  });
 });

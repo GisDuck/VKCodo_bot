@@ -12,6 +12,10 @@ export type LessonListResult = {
   maxLessonNumber: number | null;
 };
 
+type LessonListOptions = {
+  includeUnavailable?: boolean;
+};
+
 const MONTHS = [
   "января",
   "февраля",
@@ -48,8 +52,10 @@ export function formatDate(dateStr: string): string {
 }
 
 export class LessonFormatService {
-  buildAvailableLessonList(lessons: MoyKlassLesson[]): LessonListResult {
-    const availableLessons = lessons.filter((lesson) => lesson.status === 0);
+  buildAvailableLessonList(lessons: MoyKlassLesson[], options: LessonListOptions = {}): LessonListResult {
+    const availableLessons = options.includeUnavailable
+      ? lessons
+      : lessons.filter((lesson) => lesson.status === 0);
     const weekdayCount = new Set(availableLessons.map((lesson) => getWeekdayName(lesson.date))).size;
     const timeCount = new Set(availableLessons.map((lesson) => lesson.beginTime)).size;
     const maxCount = timeCount > 1 ? 6 : weekdayCount > 1 ? 4 : 2;
