@@ -195,6 +195,7 @@ export class MoyKlassService {
       requestBody: init?.body ?? null,
       responseStatus: response.status,
       responseBody,
+      retryable: response.status >= 500,
       durationMs: Date.now() - startedAt
     });
 
@@ -234,6 +235,7 @@ export class MoyKlassService {
       requestBody: { apiKey: maskSecret(this.apiKey) },
       responseStatus: response.status,
       responseBody: maskAuthResponse(responseBody),
+      retryable: response.status >= 500,
       durationMs: Date.now() - startedAt
     });
 

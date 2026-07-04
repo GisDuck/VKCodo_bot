@@ -7,6 +7,7 @@ import { MenuService } from "./menu.service.js";
 import { VkEventLogService } from "./vk-event-log.service.js";
 import { VkMessageService } from "./vk-message.service.js";
 import { formatDate, getWeekdayName } from "./lesson-format.service.js";
+import { isRetryableExternalError, withExternalApiRetry } from "../lib/external-retry.js";
 
 type VkIncomingUpdate = {
   type?: string;
@@ -40,6 +41,8 @@ type SessionDraft = {
   currentIndex?: number;
   currentChild?: DraftChild;
   bookingIds?: string[];
+  orderId?: string;
+  paymentChoiceIsYanino?: boolean;
   changeBookingId?: string;
   changeCourseCode?: BotCourseCode;
   availableLessons?: Array<{ id: number; classId: number; date: string; beginTime: string }>;
@@ -266,7 +269,7 @@ export class VkBotService {
         await this.handleChangeLessonSelection(parentId, peerId, draft, payload, text);
         return "idle";
       case "order_ready":
-        await this.messages.sendText(peerId, "Заказ уже собран. Выберите способ оплаты кнопкой.");
+        await this.repeatPaymentChoice(parentId, peerId, draft);
         return state;
       default:
         await this.setSession(parentId, "idle", {});
@@ -524,7 +527,9 @@ export class VkBotService {
     }
 
     try {
-      const list = await this.booking.getAvailableLessons(branchId, courseCode);
+      const list = await this.runInteractiveExternalRequest(peerId, () =>
+        this.booking.getAvailableLessons(branchId, courseCode)
+      );
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
       if (list.lessons.length === 0) {
@@ -533,7 +538,7 @@ export class VkBotService {
       }
       await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
-      await this.messages.sendText(peerId, `Не получилось получить даты занятий: ${this.errorMessage(error)}`);
+      await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
   }
 
@@ -593,7 +598,11 @@ export class VkBotService {
       totalKopecks: order.totalKopecks
     });
 
-    await this.setSession(parentId, "order_ready", { bookingIds: draft.bookingIds });
+    await this.setSession(parentId, "order_ready", {
+      bookingIds: draft.bookingIds,
+      orderId: order.id,
+      paymentChoiceIsYanino: order.items.every((item) => item.booking.branch.code === "YANINO")
+    });
     await this.messages.sendText(peerId, summary);
     await this.messages.sendKeyboard(
       peerId,
@@ -652,12 +661,19 @@ export class VkBotService {
 
   private async handleOnlinePayment(peerId: number, orderId: string) {
     try {
-      const payment = await this.booking.initOnlinePayment(orderId);
+      const payment = await this.runInteractiveExternalRequest(peerId, () => this.booking.initOnlinePayment(orderId));
       await this.messages.sendKeyboard(peerId, `Ссылка на оплату:\n${payment?.paymentUrl ?? ""}`, [
         { label: "В школе", payload: { action: "pay_on_site", orderId }, color: "secondary" }
       ]);
     } catch (error) {
-      await this.messages.sendText(peerId, `Не удалось создать ссылку оплаты: ${this.errorMessage(error)}`);
+      await this.handleInteractiveExternalFailure(peerId, error, async () => {
+        const choice = await this.getPaymentChoice(orderId);
+        await this.messages.sendKeyboard(
+          peerId,
+          this.buildPaymentChoiceMessage(choice.isYanino),
+          this.messages.buildPaymentButtons(orderId)
+        );
+      });
     }
   }
 
@@ -665,7 +681,10 @@ export class VkBotService {
     try {
       await this.booking.markPayOnSite(orderId);
       await this.setSession(parentId, "idle", {});
-      await this.messages.sendText(peerId, "Готово, записали. Оплатить можно будет в филиале.");
+      await this.messages.sendText(
+        peerId,
+        "Спасибо! Ваша запись принята. Мы ждём вас на пробном занятии. Оплатить занятие можно будет в школе."
+      );
       await this.renderChildrenMenu(parentId, peerId);
     } catch (error) {
       await this.messages.sendText(peerId, `Не удалось подтвердить оплату в филиале: ${this.errorMessage(error)}`);
@@ -865,7 +884,9 @@ export class VkBotService {
       where: { id: bookingId, child: { parentId } }
     });
     try {
-      const list = await this.booking.getAvailableLessons(booking.branchId, courseCode);
+      const list = await this.runInteractiveExternalRequest(peerId, () =>
+        this.booking.getAvailableLessons(booking.branchId, courseCode)
+      );
       await this.setSession(parentId, "change_lesson_select", {
         changeBookingId: bookingId,
         changeCourseCode: courseCode,
@@ -877,7 +898,7 @@ export class VkBotService {
       }
       await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
-      await this.messages.sendText(peerId, `Не получилось получить новые даты: ${this.errorMessage(error)}`);
+      await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
   }
 
@@ -895,7 +916,9 @@ export class VkBotService {
     }
 
     try {
-      const list = await this.booking.getAvailableLessons(branchId, courseCode);
+      const list = await this.runInteractiveExternalRequest(peerId, () =>
+        this.booking.getAvailableLessons(branchId, courseCode)
+      );
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
 
@@ -906,8 +929,67 @@ export class VkBotService {
 
       await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
     } catch (error) {
-      await this.messages.sendText(peerId, `Не получилось получить даты занятий: ${this.errorMessage(error)}`);
+      await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
+  }
+
+  private async repeatPaymentChoice(parentId: string, peerId: number, draft: SessionDraft) {
+    const orderId = draft.orderId;
+    if (!orderId) {
+      await this.setSession(parentId, "idle", {});
+      await this.messages.sendText(peerId, "Не удалось найти заказ. Откройте меню детей, чтобы проверить запись.");
+      await this.renderChildrenMenu(parentId, peerId);
+      return;
+    }
+
+    const isYanino = typeof draft.paymentChoiceIsYanino === "boolean"
+      ? draft.paymentChoiceIsYanino
+      : (await this.getPaymentChoice(orderId)).isYanino;
+    await this.messages.sendKeyboard(
+      peerId,
+      this.buildPaymentChoiceMessage(isYanino),
+      this.messages.buildPaymentButtons(orderId)
+    );
+  }
+
+  private async getPaymentChoice(orderId: string): Promise<{ isYanino: boolean }> {
+    const order = await this.db.order.findUniqueOrThrow({
+      where: { id: orderId },
+      include: { items: { include: { booking: { include: { branch: true } } } } }
+    });
+    return { isYanino: order.items.every((item) => item.booking.branch.code === "YANINO") };
+  }
+
+  private async runInteractiveExternalRequest<T>(peerId: number, operation: () => Promise<T>): Promise<T> {
+    return withExternalApiRetry(operation, {
+      attempts: 3,
+      onRetry: async () => {
+        await this.messages.sendText(peerId, "нет соединения с сервером, повторяем запрос");
+      }
+    });
+  }
+
+  private async handleInteractiveExternalFailure(
+    peerId: number,
+    error: unknown,
+    resendButtons: () => Promise<void>
+  ) {
+    if (isRetryableExternalError(error)) {
+      await this.messages.sendText(peerId, "сейчас наблюдаются неполадки с соединением. Попробуйте продолжить позже");
+      await resendButtons();
+      return;
+    }
+
+    await this.messages.sendText(peerId, `Не получилось выполнить запрос: ${this.errorMessage(error)}`);
+    await resendButtons();
+  }
+
+  private async sendRetryLessonsMessage(peerId: number) {
+    await this.messages.sendKeyboard(
+      peerId,
+      "Попробуйте проверить доступные даты еще раз.",
+      this.messages.buildRetryLessonsButtons()
+    );
   }
 
   private async sendNoLessonsMessage(peerId: number) {

@@ -66,11 +66,12 @@ export class TBankService {
       body: JSON.stringify(payload)
     });
 
-    const data = (await response.json()) as TBankInitResponse;
+    const responseText = await response.text();
+    const data = parseTBankBody(responseText) as TBankInitResponse;
     if (!response.ok || !data.Success || !data.PaymentId || !data.PaymentURL) {
       throw new Error(
         `T-Bank Init failed: ${response.status} ${data.ErrorCode ?? ""} ${data.Message ?? ""} ${
-          data.Details ?? ""
+          data.Details ?? responseText
         }`.trim()
       );
     }
@@ -109,5 +110,14 @@ export class TBankService {
       .join("");
 
     return crypto.createHash("sha256").update(source).digest("hex");
+  }
+}
+
+function parseTBankBody(text: string): unknown {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
   }
 }

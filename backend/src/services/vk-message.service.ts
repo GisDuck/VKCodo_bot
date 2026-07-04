@@ -152,7 +152,6 @@ export class VkMessageService {
     const buttons: Button[] = [];
     buttons.push({ label: "В школе", payload: { action: "pay_on_site", orderId }, color: "secondary" });
     buttons.push({ label: "Карта/QR онлайн", payload: { action: "pay_online", orderId }, color: "positive" });
-    buttons.push({ label: "Мои дети", payload: { action: "children" }, color: "primary" });
     return buttons;
   }
 

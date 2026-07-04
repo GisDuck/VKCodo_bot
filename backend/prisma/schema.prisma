@@ -140,6 +140,7 @@ model TrialBooking {
   branch                Branch        @relation(fields: [branchId], references: [id])
   botCourse             BotCourse     @relation(fields: [botCourseId], references: [id])
   orderItem             OrderItem?
+  moyklassSyncJobs      MoyKlassSyncJob[]
 }
 
 model Order {
@@ -153,6 +154,7 @@ model Order {
   parent         Parent        @relation(fields: [parentId], references: [id], onDelete: Cascade)
   items          OrderItem[]
   payment        Payment?
+  moyklassSyncJobs MoyKlassSyncJob[]
 }
 
 model OrderItem {
@@ -183,6 +185,43 @@ model Payment {
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   order             Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model MoyKlassSyncJob {
+  id          String             @id @default(cuid())
+  orderId     String
+  bookingId   String
+  status      String             @default("pending")
+  source      String
+  lastError   String?
+  nextRunAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  order       Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  booking     TrialBooking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  steps       MoyKlassSyncStep[]
+
+  @@unique([bookingId])
+  @@index([status, nextRunAt])
+  @@index([orderId])
+}
+
+model MoyKlassSyncStep {
+  id          String          @id @default(cuid())
+  jobId       String
+  step        String
+  status      String          @default("pending")
+  attempts    Int             @default(0)
+  externalId  Int?
+  lastError   String?
+  completedAt DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  job         MoyKlassSyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, step])
+  @@index([status])
 }
 
 model BotSession {

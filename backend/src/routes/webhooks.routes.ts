@@ -5,12 +5,14 @@ import { BookingService } from "../services/booking.service.js";
 import { TBankService } from "../services/tbank.service.js";
 import { VkEventLogService } from "../services/vk-event-log.service.js";
 import { VkBotService } from "../services/vk-bot.service.js";
+import { VkMessageService } from "../services/vk-message.service.js";
 
 export async function webhooksRoutes(app: FastifyInstance) {
   const vkBot = new VkBotService();
   const tbank = new TBankService();
   const booking = new BookingService();
   const vkLog = new VkEventLogService();
+  const vkMessages = new VkMessageService();
 
   app.post("/webhooks/vk", async (request, reply) => {
     const body = request.body as Record<string, unknown>;
@@ -56,7 +58,14 @@ export async function webhooksRoutes(app: FastifyInstance) {
     if (!payment) return reply.code(404).send({ error: "payment not found" });
 
     if (tbank.isPaidStatus(body.Status)) {
-      await booking.handlePaidOrder(payment.orderId);
+      const wasAlreadyPaid = payment.status === "paid";
+      const order = await booking.handlePaidOrder(payment.orderId);
+      if (!wasAlreadyPaid) {
+        await vkMessages.sendText(
+          Number(order.parent.vkUserId),
+          "Спасибо! Оплата получена. Ваша запись принята, мы ждём вас на пробном занятии."
+        );
+      }
     } else {
       await prisma.payment.update({
         where: { orderId: payment.orderId },

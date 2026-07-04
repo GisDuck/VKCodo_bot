@@ -13,6 +13,7 @@ import { resolveTodayForDeveloperMode } from "../lib/developer-date.js";
 import { prisma } from "../lib/prisma.js";
 import { LessonFormatService } from "./lesson-format.service.js";
 import { MoyKlassService } from "./moyklass.service.js";
+import { MoyKlassSyncQueueService } from "./moyklass-sync-queue.service.js";
 import { PricingService } from "./pricing.service.js";
 import { TBankService } from "./tbank.service.js";
 
@@ -35,12 +36,15 @@ export type BookingDraftInput = {
 export class BookingService {
   private readonly lessonFormatter = new LessonFormatService();
   private readonly pricing = new PricingService();
+  private readonly moyKlassQueue: MoyKlassSyncQueueService;
 
   constructor(
     private readonly db: PrismaClient = prisma,
     private readonly moyKlass = new MoyKlassService(),
     private readonly tbank = new TBankService()
-  ) {}
+  ) {
+    this.moyKlassQueue = new MoyKlassSyncQueueService(this.db, this.moyKlass);
+  }
 
   async upsertParent(input: {
     vkUserId: number;
@@ -177,9 +181,7 @@ export class BookingService {
       }
     });
 
-    if (order.status === OrderStatus.paid) return order.payment;
-
-    await this.ensureMoyKlassBookings(order.id);
+    if (order.status === OrderStatus.paid || order.status === OrderStatus.pay_on_site) return order.payment;
 
     const chargedKopecks = env.PAYMENT_TEST_MODE ? 100 : order.totalKopecks;
     const payment = await this.tbank.initPayment({
@@ -221,9 +223,7 @@ export class BookingService {
   }
 
   async markPayOnSite(orderId: string) {
-    await this.ensureMoyKlassBookings(orderId);
-
-    return this.db.$transaction(async (tx) => {
+    const payment = await this.db.$transaction(async (tx) => {
       await tx.order.update({ where: { id: orderId }, data: { status: OrderStatus.pay_on_site } });
       await tx.trialBooking.updateMany({
         where: { orderItem: { orderId } },
@@ -247,6 +247,13 @@ export class BookingService {
         }
       });
     });
+
+    await this.moyKlassQueue.enqueueOrder(orderId, "pay_on_site");
+    void this.moyKlassQueue.processOrder(orderId).catch((error) => {
+      console.error("Failed to process MoyKlass pay-on-site queue", error);
+    });
+
+    return payment;
   }
 
   async expirePendingOrders() {
@@ -274,29 +281,6 @@ export class BookingService {
   }
 
   async handlePaidOrder(orderId: string) {
-    await this.ensureMoyKlassBookings(orderId);
-
-    const order = await this.db.order.findUniqueOrThrow({
-      where: { id: orderId },
-      include: {
-        items: {
-          include: {
-            child: true,
-            booking: { include: { branch: true } }
-          }
-        }
-      }
-    });
-
-    for (const item of order.items) {
-      if (!item.child.moyklassUserId) continue;
-      await this.moyKlass.createPayment({
-        userId: item.child.moyklassUserId,
-        filialId: item.booking.branch.moyklassId,
-        summaRubles: item.amountKopecks / 100
-      });
-    }
-
     await this.db.trialBooking.updateMany({
       where: { orderItem: { orderId } },
       data: { status: BookingStatus.booked }
@@ -307,10 +291,18 @@ export class BookingService {
       data: { status: PaymentStatus.paid }
     });
 
-    return this.db.order.update({
+    const order = await this.db.order.update({
       where: { id: orderId },
-      data: { status: OrderStatus.paid }
+      data: { status: OrderStatus.paid },
+      include: { parent: true }
     });
+
+    await this.moyKlassQueue.enqueueOrder(orderId, "online_paid");
+    void this.moyKlassQueue.processOrder(orderId).catch((error) => {
+      console.error("Failed to process MoyKlass paid queue", error);
+    });
+
+    return order;
   }
 
   async cancelBooking(bookingId: string) {
@@ -348,72 +340,12 @@ export class BookingService {
   async syncExternalRecordsForBooking(bookingId: string) {
     const item = await this.db.orderItem.findUnique({
       where: { bookingId },
-      select: { orderId: true }
+      include: { order: { include: { payment: true } } }
     });
     if (item) {
-      await this.ensureMoyKlassBookings(item.orderId);
+      const source = item.order.payment?.method === PaymentMethod.online ? "online_paid" : "pay_on_site";
+      await this.moyKlassQueue.enqueueOrder(item.orderId, source);
+      await this.moyKlassQueue.processOrder(item.orderId);
     }
-  }
-
-  private async ensureMoyKlassBookings(orderId: string) {
-    const order = await this.db.order.findUniqueOrThrow({
-      where: { id: orderId },
-      include: {
-        parent: true,
-        items: {
-          include: {
-            child: true,
-            booking: { include: { branch: true } }
-          }
-        }
-      }
-    });
-
-    for (const item of order.items) {
-      const booking = item.booking;
-      let child = item.child;
-
-      if (!child.moyklassUserId) {
-        const createdUser = await this.moyKlass.createUser({
-          childName: child.name,
-          childAge: child.age,
-          phone: order.parent.phone ?? "",
-          parentName: order.parent.name,
-          filialId: booking.branch.moyklassId
-        });
-        child = await this.db.child.update({
-          where: { id: child.id },
-          data: { moyklassUserId: createdUser.id }
-        });
-      }
-
-      if (!booking.moyklassJoinId && booking.moyklassClassId) {
-        const join = await this.moyKlass.createJoin({
-          userId: child.moyklassUserId!,
-          classId: booking.moyklassClassId,
-          priceRubles: item.amountKopecks / 100
-        });
-        await this.db.trialBooking.update({
-          where: { id: booking.id },
-          data: { moyklassJoinId: join.id, status: BookingStatus.awaiting_payment }
-        });
-      }
-
-      if (!booking.moyklassLessonRecordId && booking.moyklassLessonId) {
-        const record = await this.moyKlass.createLessonRecord({
-          userId: child.moyklassUserId!,
-          lessonId: booking.moyklassLessonId
-        });
-        await this.db.trialBooking.update({
-          where: { id: booking.id },
-          data: { moyklassLessonRecordId: record.id }
-        });
-      }
-    }
-
-    await this.db.order.update({
-      where: { id: orderId },
-      data: { status: OrderStatus.awaiting_payment }
-    });
   }
 }
