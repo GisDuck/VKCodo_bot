@@ -1,3 +1,5 @@
+import { formatMessageLessonDateFromIso } from "../lib/message-date-format.js";
+
 export type MoyKlassLesson = {
   id: number;
   classId: number;
@@ -71,9 +73,7 @@ export class LessonFormatService {
 
     const lessonsText = selected
       .map((lesson, index) => {
-        return `${index + 1}. ${formatDate(lesson.date)} в ${lesson.beginTime} ${getWeekdayName(
-          lesson.date
-        )}`;
+        return `${index + 1}. ${formatMessageLessonDateFromIso(lesson.date, lesson.beginTime)}`;
       })
       .join("\n");
 

@@ -1,4 +1,4 @@
-import { BookingStatus, PrismaClient } from "@prisma/client";
+import { BookingStatus, PrismaClient, type Payment } from "@prisma/client";
 import { addDays } from "../lib/dates.js";
 import { resolveTodayForDeveloperMode } from "../lib/developer-date.js";
 import { prisma } from "../lib/prisma.js";
@@ -45,7 +45,12 @@ export class TrialReminderService {
     for (const booking of bookings) {
       await this.messages.sendText(
         Number(booking.child.parent.vkUserId),
-        `Напоминаем о пробном занятии завтра.\n\n${this.menu.renderTrialChild(booking)}`
+        `Напоминаем о пробном занятии завтра\n\n${this.menu.renderTrialChild(booking)}`
+      );
+      await this.messages.sendKeyboard(
+        Number(booking.child.parent.vkUserId),
+        "Меню",
+        this.messages.buildTrialRootMenuButtons(this.getTrialRootMenuOptions([booking]))
       );
 
       await this.db.trialReminderLog.create({
@@ -75,6 +80,17 @@ export class TrialReminderService {
     return startOfUtcDay(
       resolveTodayForDeveloperMode(developerMode?.value === true, developerTodayDate?.value)
     );
+  }
+
+  private getTrialRootMenuOptions(bookings: Array<{
+    orderItem?: { orderId?: string; order: { payment: Payment | null } } | null;
+  }>): { onlinePaymentOrderId?: string } {
+    const booking = bookings.find((item) => {
+      const payment = item.orderItem?.order.payment ?? null;
+      return item.orderItem?.orderId && payment?.method === "on_site" && payment.status !== "paid";
+    });
+
+    return booking?.orderItem?.orderId ? { onlinePaymentOrderId: booking.orderItem.orderId } : {};
   }
 }
 

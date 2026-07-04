@@ -6,7 +6,7 @@ import { BookingService } from "./booking.service.js";
 import { MenuService } from "./menu.service.js";
 import { VkEventLogService } from "./vk-event-log.service.js";
 import { VkMessageService } from "./vk-message.service.js";
-import { formatDate, getWeekdayName } from "./lesson-format.service.js";
+import { formatMessageLessonDate, formatMessageLessonDateFromIso } from "../lib/message-date-format.js";
 import { isRetryableExternalError, withExternalApiRetry } from "../lib/external-retry.js";
 
 type VkIncomingUpdate = {
@@ -193,7 +193,7 @@ export class VkBotService {
         return;
       }
 
-      if (payload.action === "booking_details" && typeof payload.bookingId === "string") {
+      if (payload.action === "booking_details") {
         await this.handleBookingDetails(parent.id, message.peer_id);
         return;
       }
@@ -321,6 +321,9 @@ export class VkBotService {
       case "awaiting_lesson":
         await this.handleLesson(parentId, peerId, draft, payload, text);
         return "order_ready";
+      case "awaiting_lesson_branch_change":
+        await this.handleLessonBranchChange(parentId, peerId, draft, payload, text);
+        return "awaiting_lesson";
       case "change_course_select":
         await this.handleChangeCourseSelection(parentId, peerId, draft, payload, text);
         return "change_course_confirm";
@@ -523,14 +526,14 @@ export class VkBotService {
         await this.setSession(parentId, "awaiting_children_count", draft);
         await this.messages.sendText(
           peerId,
-          "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)"
+          "Сколько детей Вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)"
         );
         return;
       case "childName":
         await this.setSession(parentId, "awaiting_child_name", draft);
         await this.messages.sendText(
           peerId,
-          draft.childrenCount === 1 ? "Как зовут вашего ребенка?" : "Как зовут ребенка?"
+          draft.childrenCount === 1 ? "Как зовут Вашего ребенка?" : "Как зовут ребенка?"
         );
         return;
       case "childAge":
@@ -563,7 +566,7 @@ export class VkBotService {
     await this.setSession(parentId, "awaiting_children_count", draft);
     await this.messages.sendInlineKeyboard(
       peerId,
-      "Сколько детей вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
+      "Сколько детей Вы хотите записать на занятие? Мы будем записывать их по очереди (до 5)",
       this.buildEditButtons(draft, ["phone"])
     );
   }
@@ -582,7 +585,7 @@ export class VkBotService {
     await this.messages.sendInlineKeyboard(
       peerId,
       count === 1
-        ? "Как зовут вашего ребенка?"
+        ? "Как зовут Вашего ребенка?"
         : "Как зовут первого ребенка?",
       this.buildEditButtons(draft, ["childrenCount"])
     );
@@ -701,7 +704,7 @@ export class VkBotService {
 
     const accepted = this.resolveCourseConfirm(payload, text);
     if (accepted === null) {
-      await this.messages.sendKeyboard(peerId, "Устраивает ли вас курс?", this.messages.buildCourseConfirmButtons());
+      await this.messages.sendKeyboard(peerId, "Устраивает ли Вас курс?", this.messages.buildCourseConfirmButtons());
       return;
     }
 
@@ -730,7 +733,11 @@ export class VkBotService {
         await this.sendNoLessonsMessage(peerId);
         return;
       }
-      await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
+      await this.messages.sendKeyboard(
+        peerId,
+        list.lessonsText,
+        this.messages.buildLessonButtons(list.lessons, { withDraftChangeActions: true })
+      );
     } catch (error) {
       await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
@@ -743,6 +750,16 @@ export class VkBotService {
     payload: Record<string, unknown>,
     text: string
   ) {
+    if (payload.action === "lesson_change_course") {
+      await this.startDraftCourseChange(parentId, peerId, draft);
+      return;
+    }
+
+    if (payload.action === "lesson_change_branch") {
+      await this.startDraftBranchChange(parentId, peerId, draft);
+      return;
+    }
+
     const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
     if (!lessonId) {
       await this.resendLessonOptions(peerId, draft, "Выберите дату кнопкой с номером.");
@@ -817,13 +834,13 @@ export class VkBotService {
     draft.currentChild = { ...(draft.currentChild ?? {}), courseCode };
     await this.setSession(parentId, "awaiting_course_confirm", draft);
 
-    await this.messages.sendText(peerId, `${draft.parentName ?? "Здравствуйте"}, рекомендуем вам курс ${course.title}!`);
+    await this.messages.sendText(peerId, `${draft.parentName ?? "Здравствуйте"}, рекомендуем Вам курс ${course.title}!`);
     await this.messages.sendText(peerId, course.description);
     await this.messages.sendText(
       peerId,
-      `Полное описание программы и модулей вы сможете найти по ссылке ниже:\n${branch.baseUrl}${course.defaultUrl}`
+      `Полное описание программы и модулей Вы сможете найти по ссылке ниже:\n${branch.baseUrl}${course.defaultUrl}`
     );
-    await this.messages.sendKeyboard(peerId, "Устраивает ли вас курс?", this.messages.buildCourseConfirmButtons());
+    await this.messages.sendKeyboard(peerId, "Устраивает ли Вас курс?", this.messages.buildCourseConfirmButtons());
   }
 
   private buildPaymentChoiceMessage(isYanino: boolean): string {
@@ -844,13 +861,82 @@ export class VkBotService {
     await this.messages.sendKeyboard(
       peerId,
       `${message}\n\n${this.formatLessonOptions(lessons)}`,
-      this.messages.buildLessonButtons(lessons)
+      this.messages.buildLessonButtons(lessons, { withDraftChangeActions: true })
     );
+  }
+
+  private async startDraftCourseChange(parentId: string, peerId: number, draft: SessionDraft) {
+    const age = draft.currentChild?.age;
+    if (!age) {
+      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага.");
+      return;
+    }
+
+    draft.currentChild = { ...(draft.currentChild ?? {}), courseCode: undefined };
+    draft.availableLessons = [];
+    draft.selectedOption = undefined;
+    await this.setSession(parentId, "awaiting_course", draft);
+    await this.messages.sendCourseOptions(peerId, age, this.courseRouter.getAvailableOptions(age));
+  }
+
+  private async startDraftBranchChange(parentId: string, peerId: number, draft: SessionDraft) {
+    draft.currentChild = { ...(draft.currentChild ?? {}), branchId: undefined };
+    draft.availableLessons = [];
+    await this.setSession(parentId, "awaiting_lesson_branch_change", draft);
+    const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+    await this.messages.sendBranchOptions(peerId, branches);
+  }
+
+  private async handleLessonBranchChange(
+    parentId: string,
+    peerId: number,
+    draft: SessionDraft,
+    payload: Record<string, unknown>,
+    text: string
+  ) {
+    let branchId = typeof payload.branchId === "string" ? payload.branchId : undefined;
+    if (!branchId && text) {
+      const branch = await this.db.branch.findFirst({ where: { name: { equals: text, mode: "insensitive" } } });
+      branchId = branch?.id;
+    }
+
+    if (!branchId) {
+      const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+      await this.messages.sendBranchOptions(peerId, branches);
+      return;
+    }
+
+    const courseCode = draft.currentChild?.courseCode;
+    if (!courseCode) {
+      await this.setSession(parentId, "awaiting_course", draft);
+      await this.resendCourseOptions(peerId, draft);
+      return;
+    }
+
+    draft.currentChild = { ...(draft.currentChild ?? {}), branchId };
+    try {
+      const list = await this.runInteractiveMoyKlassRequest(peerId, () =>
+        this.booking.getAvailableLessons(branchId, courseCode)
+      );
+      draft.availableLessons = list.lessons;
+      await this.setSession(parentId, "awaiting_lesson", draft);
+      if (list.lessons.length === 0) {
+        await this.sendNoLessonsMessage(peerId);
+        return;
+      }
+      await this.messages.sendKeyboard(
+        peerId,
+        list.lessonsText,
+        this.messages.buildLessonButtons(list.lessons, { withDraftChangeActions: true })
+      );
+    } catch (error) {
+      await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
+    }
   }
 
   private formatLessonOptions(lessons: Array<{ date: string; beginTime: string }>): string {
     return lessons
-      .map((lesson, index) => `${index + 1}. ${formatDate(lesson.date)} в ${lesson.beginTime} ${getWeekdayName(lesson.date)}`)
+      .map((lesson, index) => `${index + 1}. ${formatMessageLessonDateFromIso(lesson.date, lesson.beginTime)}`)
       .join("\n");
   }
 
@@ -878,7 +964,7 @@ export class VkBotService {
       await this.setSession(parentId, "idle", {});
       await this.messages.sendText(
         peerId,
-        "Спасибо! Ваша запись принята. Мы ждём вас на пробном занятии. Оплатить занятие можно будет в школе."
+        "Спасибо! Ваша запись принята. Мы ждём Вас на пробном занятии. Оплатить занятие можно будет в школе."
       );
       await this.renderChildrenMenu(parentId, peerId);
     } catch (error) {
@@ -1127,10 +1213,10 @@ export class VkBotService {
 
   private buildRescheduleDoneMessage(payment: Payment | null): string {
     if (payment?.method === "on_site" && payment.status !== "paid") {
-      return "Готово, запись обновлена. Вы выбрали оплату в школе. Ждем вас на пробном занятии!";
+      return "Готово, запись обновлена. Вы выбрали оплату в школе. Ждем Вас на пробном занятии!";
     }
 
-    return "Готово, запись обновлена. Ждем вас на пробном занятии!";
+    return "Готово, запись обновлена. Ждем Вас на пробном занятии!";
   }
 
   private async askChangeCourseConfirm(
@@ -1202,7 +1288,11 @@ export class VkBotService {
         return;
       }
 
-      await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
+      await this.messages.sendKeyboard(
+        peerId,
+        list.lessonsText,
+        this.messages.buildLessonButtons(list.lessons, { withDraftChangeActions: true })
+      );
     } catch (error) {
       await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
@@ -1331,26 +1421,28 @@ export class VkBotService {
   }
 
   private formatBookingChoice(booking: { child: { name: string }; lessonDate: Date | null; lessonBeginTime: string | null }) {
-    const date = booking.lessonDate ? booking.lessonDate.toLocaleDateString("ru-RU") : "дата не выбрана";
-    const time = booking.lessonBeginTime ?? "время не выбрано";
-    return `${booking.child.name} в ${time} ${date}`;
+    const date = booking.lessonDate
+      ? formatMessageLessonDate(booking.lessonDate, booking.lessonBeginTime)
+      : "дата не выбрана";
+    return `${booking.child.name} ${date}`;
   }
 
   private async renderChildrenMenu(parentId: string, peerId: number) {
     const bookings = await this.getVisibleTrialBookings(parentId);
 
-    if (bookings.length === 0) {
-      await this.messages.sendText(peerId, "Пока детей в меню нет.");
-      return;
-    }
+    await this.messages.sendKeyboard(
+      peerId,
+      "Меню",
+      this.messages.buildTrialRootMenuButtons(this.getTrialRootMenuOptions(bookings))
+    );
+  }
 
-    for (const booking of bookings) {
-      await this.messages.sendKeyboard(
-        peerId,
-        this.menu.renderTrialChild(booking),
-        this.messages.buildTrialMenuButtons(booking.id, this.getTrialMenuButtonOptions(booking))
-      );
-    }
+  private getTrialRootMenuOptions(bookings: Array<{
+    orderItem?: { orderId?: string; order: { payment: Payment | null } } | null;
+  }>): { onlinePaymentOrderId?: string } {
+    const booking = bookings.find((item) => this.getTrialMenuButtonOptions(item).onlinePaymentOrderId);
+    if (!booking) return {};
+    return this.getTrialMenuButtonOptions(booking);
   }
 
   private getTrialMenuButtonOptions(booking: {

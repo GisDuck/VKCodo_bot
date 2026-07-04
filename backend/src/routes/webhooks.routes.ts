@@ -63,7 +63,7 @@ export async function webhooksRoutes(app: FastifyInstance) {
       if (!wasAlreadyPaid) {
         await vkMessages.sendText(
           Number(order.parent.vkUserId),
-          "Спасибо! Оплата получена. Ваша запись принята, мы ждём вас на пробном занятии."
+          "Спасибо! Оплата получена. Ваша запись принята, мы ждём Вас на пробном занятии."
         );
         await vkBot.showTrialMenuForParent(order.parentId, Number(order.parent.vkUserId));
       }

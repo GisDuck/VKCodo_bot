@@ -15,7 +15,7 @@ describe("LessonFormatService", () => {
       lesson(3, "2026-07-06")
     ]);
     expect(result.lessons).toHaveLength(2);
-    expect(result.lessonsText).toContain("1. 6 июля в 15:00 понедельник");
+    expect(result.lessonsText).toContain("1. 6 июля 15:00 пн");
   });
 
   it("returns four options when weekdays differ", () => {
@@ -53,6 +53,6 @@ describe("LessonFormatService", () => {
       includeUnavailable: true
     });
     expect(result.lessons).toHaveLength(1);
-    expect(result.lessonsText).toContain("1. 6 июля в 15:00 понедельник");
+    expect(result.lessonsText).toContain("1. 6 июля 15:00 пн");
   });
 });

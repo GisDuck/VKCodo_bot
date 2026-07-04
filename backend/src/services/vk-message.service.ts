@@ -40,7 +40,7 @@ export class VkMessageService {
   async sendCourseOptions(peerId: number, age: number, options: CourseOption[]): Promise<void> {
     await this.sendKeyboard(
       peerId,
-      "Какое направление вас интересует?",
+      "Какое направление Вас интересует?",
       options.map((option) => ({
         label: option.label,
         payload: { action: "course_option", option: option.key, age },
@@ -57,7 +57,7 @@ export class VkMessageService {
   ): Promise<void> {
     await this.sendKeyboard(
       peerId,
-      "Какое направление вас интересует?",
+      "Какое направление Вас интересует?",
       [
         ...options.map((option) => ({
           label: option.label,
@@ -166,12 +166,21 @@ export class VkMessageService {
     ];
   }
 
-  buildLessonButtons(lessons: Array<{ id: number; classId: number }>) {
-    return lessons.map((lesson, index) => ({
+  buildLessonButtons(lessons: Array<{ id: number; classId: number }>, options: { withDraftChangeActions?: boolean } = {}) {
+    const buttons: Button[] = lessons.map((lesson, index) => ({
       label: String(index + 1),
       payload: { action: "lesson", lessonId: lesson.id, classId: lesson.classId },
       color: "primary" as const
     }));
+
+    if (options.withDraftChangeActions) {
+      buttons.push(
+        { label: "др. филиал", payload: { action: "lesson_change_branch" }, color: "secondary" },
+        { label: "др. курс", payload: { action: "lesson_change_course" }, color: "secondary" }
+      );
+    }
+
+    return buttons;
   }
 
   buildRetryLessonsButtons() {
@@ -195,6 +204,24 @@ export class VkMessageService {
     const buttons: Button[] = [
       { label: "Перенести запись", payload: { action: "choose_change_booking" }, color: "primary" },
       { label: "Когда моя запись", payload: { action: "booking_details", bookingId }, color: "secondary" },
+      { label: "Записать еще одного ребенка", payload: { action: "add_child" }, color: "positive" }
+    ];
+
+    if (options.onlinePaymentOrderId) {
+      buttons.push({
+        label: "Оплатить онлайн",
+        payload: { action: "pay_online", orderId: options.onlinePaymentOrderId },
+        color: "positive"
+      });
+    }
+
+    return buttons;
+  }
+
+  buildTrialRootMenuButtons(options: { onlinePaymentOrderId?: string } = {}) {
+    const buttons: Button[] = [
+      { label: "Перенести запись", payload: { action: "choose_change_booking" }, color: "primary" },
+      { label: "Когда моя запись", payload: { action: "booking_details" }, color: "secondary" },
       { label: "Записать еще одного ребенка", payload: { action: "add_child" }, color: "positive" }
     ];
 
@@ -258,22 +285,23 @@ export class VkMessageService {
 
   private async sendQueued(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
     await this.waitForMessageGap(peerId);
+    const normalizedMessage = normalizeOutgoingMessage(message);
 
     await this.log.write("vk_send", {
       peerId,
-      message,
+      message: normalizedMessage,
       hasKeyboard: Boolean(keyboard)
     });
 
     if (!env.VK_GROUP_TOKEN) {
-      console.log("[vk:dry-run]", { peerId, message, keyboard: keyboard?.toString() });
+      console.log("[vk:dry-run]", { peerId, message: normalizedMessage, keyboard: keyboard?.toString() });
       return;
     }
 
     await this.vk.api.messages.send({
       peer_id: peerId,
       random_id: Date.now() + Math.floor(Math.random() * 1000),
-      message,
+      message: normalizedMessage,
       keyboard
     });
 
@@ -291,6 +319,12 @@ export class VkMessageService {
 
 export function labelToPrimaryCourseOption(label: string) {
   return Object.entries(COURSE_OPTION_LABELS).find(([, value]) => value === label)?.[0];
+}
+
+function normalizeOutgoingMessage(message: string): string {
+  return message
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\.+\s*$/u, "");
 }
 
 function sleep(ms: number): Promise<void> {
