@@ -141,6 +141,7 @@ model TrialBooking {
   botCourse             BotCourse     @relation(fields: [botCourseId], references: [id])
   orderItem             OrderItem?
   moyklassSyncJobs      MoyKlassSyncJob[]
+  reminderLogs          TrialReminderLog[]
 }
 
 model Order {
@@ -238,4 +239,16 @@ model AppSetting {
   key       String   @id
   value     Json
   updatedAt DateTime @updatedAt
+}
+
+model TrialReminderLog {
+  id         String       @id @default(cuid())
+  bookingId  String
+  type       String
+  targetDate DateTime
+  sentAt     DateTime     @default(now())
+  booking    TrialBooking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, type, targetDate])
+  @@index([sentAt])
 }

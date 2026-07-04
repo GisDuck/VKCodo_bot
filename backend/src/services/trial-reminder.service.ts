@@ -1,0 +1,87 @@
+import { BookingStatus, PrismaClient } from "@prisma/client";
+import { addDays } from "../lib/dates.js";
+import { resolveTodayForDeveloperMode } from "../lib/developer-date.js";
+import { prisma } from "../lib/prisma.js";
+import { MenuService } from "./menu.service.js";
+import { VkMessageService } from "./vk-message.service.js";
+
+const REMINDER_TYPE = "trial_day_before";
+
+export class TrialReminderService {
+  private readonly menu = new MenuService();
+  private readonly messages = new VkMessageService();
+
+  constructor(private readonly db: PrismaClient = prisma) {}
+
+  async sendTomorrowTrialReminders() {
+    const today = await this.getReminderToday();
+    const targetDate = startOfUtcDay(addDays(today, 1));
+    const nextDate = addDays(targetDate, 1);
+
+    const bookings = await this.db.trialBooking.findMany({
+      where: {
+        status: { in: [BookingStatus.awaiting_payment, BookingStatus.pay_on_site, BookingStatus.booked] },
+        lessonDate: {
+          gte: targetDate,
+          lt: nextDate
+        },
+        reminderLogs: {
+          none: {
+            type: REMINDER_TYPE,
+            targetDate
+          }
+        }
+      },
+      include: {
+        child: { include: { parent: true } },
+        branch: true,
+        botCourse: true,
+        orderItem: { include: { order: { include: { payment: true } } } }
+      },
+      orderBy: [{ lessonDate: "asc" }, { lessonBeginTime: "asc" }]
+    });
+
+    let sent = 0;
+    for (const booking of bookings) {
+      await this.messages.sendText(
+        Number(booking.child.parent.vkUserId),
+        `Напоминаем о пробном занятии завтра.\n\n${this.menu.renderTrialChild(booking)}`
+      );
+
+      await this.db.trialReminderLog.create({
+        data: {
+          bookingId: booking.id,
+          type: REMINDER_TYPE,
+          targetDate
+        }
+      });
+      sent += 1;
+    }
+
+    return {
+      checkedDate: toIsoDate(today),
+      targetDate: toIsoDate(targetDate),
+      found: bookings.length,
+      sent
+    };
+  }
+
+  private async getReminderToday(): Promise<Date> {
+    const [developerMode, developerTodayDate] = await Promise.all([
+      this.db.appSetting.findUnique({ where: { key: "developerMode" } }),
+      this.db.appSetting.findUnique({ where: { key: "developerTodayDate" } })
+    ]);
+
+    return startOfUtcDay(
+      resolveTodayForDeveloperMode(developerMode?.value === true, developerTodayDate?.value)
+    );
+  }
+}
+
+function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+function toIsoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}

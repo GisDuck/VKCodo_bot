@@ -193,7 +193,7 @@ export class VkMessageService {
 
   buildTrialMenuButtons(bookingId: string, options: { onlinePaymentOrderId?: string } = {}) {
     const buttons: Button[] = [
-      { label: "Перенести запись", payload: { action: "change_date", bookingId }, color: "primary" },
+      { label: "Перенести запись", payload: { action: "choose_change_booking" }, color: "primary" },
       { label: "Когда моя запись", payload: { action: "booking_details", bookingId }, color: "secondary" },
       { label: "Записать еще одного ребенка", payload: { action: "add_child" }, color: "positive" }
     ];
@@ -207,6 +207,21 @@ export class VkMessageService {
     }
 
     return buttons;
+  }
+
+  buildRescheduleBookingButtons(bookings: Array<{ id: string }>): Button[] {
+    return [
+      ...bookings.map((booking, index) => ({
+        label: String(index + 1),
+        payload: { action: "change_booking_choice", bookingId: booking.id },
+        color: "primary" as const
+      })),
+      {
+        label: "Отмена",
+        payload: { action: "cancel_reschedule" },
+        color: "negative" as const
+      }
+    ];
   }
 
   private buildKeyboard(buttons: Button[], inline = false) {

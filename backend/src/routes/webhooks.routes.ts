@@ -65,8 +65,8 @@ export async function webhooksRoutes(app: FastifyInstance) {
           Number(order.parent.vkUserId),
           "Спасибо! Оплата получена. Ваша запись принята, мы ждём вас на пробном занятии."
         );
+        await vkBot.showTrialMenuForParent(order.parentId, Number(order.parent.vkUserId));
       }
-      await vkBot.showTrialMenuForParent(order.parentId, Number(order.parent.vkUserId));
     } else {
       await prisma.payment.update({
         where: { orderId: payment.orderId },

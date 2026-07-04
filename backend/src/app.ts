@@ -5,6 +5,7 @@ import { paymentsRoutes } from "./routes/payments.routes.js";
 import { webhooksRoutes } from "./routes/webhooks.routes.js";
 import { BookingService } from "./services/booking.service.js";
 import { MoyKlassSyncQueueService } from "./services/moyklass-sync-queue.service.js";
+import { TrialReminderService } from "./services/trial-reminder.service.js";
 
 export async function buildApp() {
   const app = Fastify({
@@ -30,6 +31,10 @@ export async function buildApp() {
   app.post("/jobs/process-moyklass-sync", async () => {
     const processed = await new MoyKlassSyncQueueService().processPending();
     return { processed };
+  });
+
+  app.post("/jobs/send-trial-reminders", async () => {
+    return new TrialReminderService().sendTomorrowTrialReminders();
   });
 
   app.addHook("onReady", async () => {

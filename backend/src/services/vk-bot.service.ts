@@ -46,12 +46,13 @@ type SessionDraft = {
   paymentChoiceIsYanino?: boolean;
   changeBookingId?: string;
   changeCourseCode?: BotCourseCode;
+  changeBookingOptions?: Array<{ id: string }>;
   availableLessons?: Array<{ id: number; classId: number; date: string; beginTime: string }>;
   selectedOption?: string;
 };
 
 const ADDITIONAL_CHILD_TIMEOUT_MS = 60 * 60_000;
-const SLOW_MOYKLASS_NOTICE_MS = 20_000;
+const SLOW_MOYKLASS_NOTICE_MS = 30_000;
 
 export class VkBotService {
   private readonly courseRouter = new CourseRouterService();
@@ -193,7 +194,30 @@ export class VkBotService {
       }
 
       if (payload.action === "booking_details" && typeof payload.bookingId === "string") {
-        await this.handleBookingDetails(parent.id, message.peer_id, payload.bookingId);
+        await this.handleBookingDetails(parent.id, message.peer_id);
+        return;
+      }
+
+      if (payload.action === "choose_change_booking") {
+        if (session.state !== "idle") {
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          return;
+        }
+        await this.askWhichBookingToReschedule(parent.id, message.peer_id);
+        return;
+      }
+
+      if (payload.action === "cancel_reschedule") {
+        await this.cancelReschedule(parent.id, message.peer_id);
+        return;
+      }
+
+      if (payload.action === "change_booking_choice" && typeof payload.bookingId === "string") {
+        if (session.state !== "change_booking_select") {
+          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Откройте меню и попробуйте еще раз.");
+          return;
+        }
+        await this.handleChangeBookingChoice(parent.id, message.peer_id, draft, payload.bookingId);
         return;
       }
 
@@ -228,7 +252,7 @@ export class VkBotService {
           return;
         }
         if (payload.action === "change_date" && typeof payload.bookingId === "string") {
-          await this.handleChangeDateStart(parent.id, message.peer_id, payload.bookingId);
+          await this.askWhichBookingToReschedule(parent.id, message.peer_id);
           return;
         }
         return;
@@ -303,6 +327,9 @@ export class VkBotService {
       case "change_course_confirm":
         await this.handleChangeCourseConfirm(parentId, peerId, draft, payload, text);
         return "change_lesson_select";
+      case "change_booking_select":
+        await this.resendBookingChoiceForReschedule(parentId, peerId, draft);
+        return state;
       case "change_lesson_select":
         await this.handleChangeLessonSelection(parentId, peerId, draft, payload, text);
         return "idle";
@@ -585,7 +612,9 @@ export class VkBotService {
     draft.currentChild = { ...(draft.currentChild ?? {}), age };
     await this.setSession(parentId, "awaiting_branch", draft);
 
-    await this.messages.sendTrialIntro(peerId);
+    if ((draft.currentIndex ?? 0) === 0 && !draft.additionalChild) {
+      await this.messages.sendTrialIntro(peerId);
+    }
     await this.resendBranchOptions(peerId, draft);
   }
 
@@ -866,22 +895,67 @@ export class VkBotService {
     }
   }
 
-  private async handleBookingDetails(parentId: string, peerId: number, bookingId: string) {
-    const booking = await this.db.trialBooking.findFirstOrThrow({
-      where: { id: bookingId, child: { parentId }, status: { not: "cancelled" } },
-      include: {
-        child: true,
-        branch: true,
-        botCourse: true,
-        orderItem: { include: { order: { include: { payment: true } } } }
-      }
-    });
+  private async handleBookingDetails(parentId: string, peerId: number) {
+    const bookings = await this.getVisibleTrialBookings(parentId);
+    if (bookings.length === 0) {
+      await this.messages.sendText(peerId, "Пока активных записей нет.");
+      return;
+    }
 
-    await this.messages.sendKeyboard(
+    for (const booking of bookings) {
+      await this.messages.sendText(peerId, this.menu.renderTrialChild(booking));
+    }
+  }
+
+  private async askWhichBookingToReschedule(parentId: string, peerId: number) {
+    const bookings = await this.getVisibleTrialBookings(parentId);
+    if (bookings.length === 0) {
+      await this.messages.sendText(peerId, "Пока активных записей нет.");
+      return;
+    }
+
+    await this.setSession(parentId, "change_booking_select", {
+      changeBookingOptions: bookings.map((booking) => ({ id: booking.id }))
+    });
+    await this.messages.sendInlineKeyboard(
       peerId,
-      this.menu.renderTrialChild(booking),
-      this.messages.buildTrialMenuButtons(booking.id, this.getTrialMenuButtonOptions(booking))
+      ["Чью запись перенести?", ...bookings.map((booking, index) => `${index + 1}. ${this.formatBookingChoice(booking)}`)].join("\n"),
+      this.messages.buildRescheduleBookingButtons(bookings)
     );
+  }
+
+  private async resendBookingChoiceForReschedule(parentId: string, peerId: number, draft: SessionDraft) {
+    const ids = draft.changeBookingOptions?.map((booking) => booking.id) ?? [];
+    const bookings = ids.length > 0
+      ? await this.getVisibleTrialBookings(parentId, ids)
+      : await this.getVisibleTrialBookings(parentId);
+
+    if (bookings.length === 0) {
+      await this.cancelReschedule(parentId, peerId);
+      return;
+    }
+
+    await this.messages.sendInlineKeyboard(
+      peerId,
+      ["Выберите запись кнопкой:", ...bookings.map((booking, index) => `${index + 1}. ${this.formatBookingChoice(booking)}`)].join("\n"),
+      this.messages.buildRescheduleBookingButtons(bookings)
+    );
+  }
+
+  private async handleChangeBookingChoice(parentId: string, peerId: number, draft: SessionDraft, bookingId: string) {
+    const allowedIds = draft.changeBookingOptions?.map((booking) => booking.id) ?? [];
+    if (allowedIds.length > 0 && !allowedIds.includes(bookingId)) {
+      await this.resendBookingChoiceForReschedule(parentId, peerId, draft);
+      return;
+    }
+
+    await this.handleChangeDateStart(parentId, peerId, bookingId);
+  }
+
+  private async cancelReschedule(parentId: string, peerId: number) {
+    await this.setSession(parentId, "idle", {});
+    await this.messages.sendText(peerId, "Перенос записи отменен.");
+    await this.renderChildrenMenu(parentId, peerId);
   }
 
   private async handleChangeCourseStart(parentId: string, peerId: number, bookingId: string) {
@@ -1016,14 +1090,12 @@ export class VkBotService {
       lessonDate: Date;
       lessonBeginTime: string;
       botCourseId?: string;
-      moyklassJoinId?: null;
       moyklassLessonRecordId?: null;
     } = {
       moyklassClassId: selected.classId,
       moyklassLessonId: selected.id,
       lessonDate: new Date(`${selected.date}T00:00:00.000Z`),
       lessonBeginTime: selected.beginTime,
-      moyklassJoinId: null,
       moyklassLessonRecordId: null
     };
 
@@ -1046,8 +1118,11 @@ export class VkBotService {
       console.error("Failed to sync changed lesson record with MoyKlass", error);
     });
     await this.setSession(parentId, "idle", {});
-    await this.messages.sendText(peerId, this.buildRescheduleDoneMessage(bookingBeforeChange.orderItem?.order.payment ?? null));
-    await this.renderChildrenMenu(parentId, peerId);
+    await this.messages.sendText(peerId, "Готово");
+    const updatedBooking = await this.getVisibleTrialBooking(parentId, draft.changeBookingId);
+    if (updatedBooking) {
+      await this.messages.sendText(peerId, this.menu.renderTrialChild(updatedBooking));
+    }
   }
 
   private buildRescheduleDoneMessage(payment: Payment | null): string {
@@ -1233,17 +1308,36 @@ export class VkBotService {
     );
   }
 
-  private async renderChildrenMenu(parentId: string, peerId: number) {
-    const bookings = await this.db.trialBooking.findMany({
-      where: { child: { parentId }, status: { not: "cancelled" } },
+  private async getVisibleTrialBookings(parentId: string, ids?: string[]) {
+    return this.db.trialBooking.findMany({
+      where: {
+        child: { parentId },
+        status: { not: "cancelled" },
+        ...(ids ? { id: { in: ids } } : {})
+      },
       include: {
         child: true,
         branch: true,
         botCourse: true,
         orderItem: { include: { order: { include: { payment: true } } } }
       },
-      orderBy: { createdAt: "desc" }
+      orderBy: { createdAt: "asc" }
     });
+  }
+
+  private async getVisibleTrialBooking(parentId: string, id: string) {
+    const [booking] = await this.getVisibleTrialBookings(parentId, [id]);
+    return booking;
+  }
+
+  private formatBookingChoice(booking: { child: { name: string }; lessonDate: Date | null; lessonBeginTime: string | null }) {
+    const date = booking.lessonDate ? booking.lessonDate.toLocaleDateString("ru-RU") : "дата не выбрана";
+    const time = booking.lessonBeginTime ?? "время не выбрано";
+    return `${booking.child.name} в ${time} ${date}`;
+  }
+
+  private async renderChildrenMenu(parentId: string, peerId: number) {
+    const bookings = await this.getVisibleTrialBookings(parentId);
 
     if (bookings.length === 0) {
       await this.messages.sendText(peerId, "Пока детей в меню нет.");

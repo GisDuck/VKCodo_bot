@@ -4,6 +4,7 @@ import { env } from "../config/env.js";
 import { BRANCHES, COURSE_CATALOG, DEFAULT_MANAGER_ID } from "../domain/catalog.js";
 import { prisma } from "../lib/prisma.js";
 import { MoyKlassService } from "../services/moyklass.service.js";
+import { TrialReminderService } from "../services/trial-reminder.service.js";
 
 const childStatuses = [ChildStatus.trial, ChildStatus.active, ChildStatus.archived];
 const childStatusLabels: Record<ChildStatus, string> = {
@@ -368,8 +369,11 @@ export async function adminRoutes(app: FastifyInstance) {
             <option value="true" ${developerMode ? "selected" : ""}>Включен</option>
           </select></label>
           <label>Сегодня в режиме разработчика <input type="date" name="developerTodayDate" value="${escapeHtml(developerTodayDate)}" /></label>
-          <p class="muted">Эта дата используется только когда включен режим разработчика. В обычном режиме бот ищет занятия от реальной сегодняшней даты.</p>
+          <p class="muted">Эта дата используется только когда включен режим разработчика. В обычном режиме бот ищет занятия и напоминания от реальной сегодняшней даты.</p>
           <button type="submit">Сохранить</button>
+        </form>
+        <form method="post" action="/admin/reminders/send-trial" style="margin-top:16px">
+          <button type="submit">Отправить напоминания на завтра</button>
         </form>
       </section>
       `
@@ -385,6 +389,25 @@ export async function adminRoutes(app: FastifyInstance) {
     await setSetting("developerMode", body.developerMode === "true");
     await setSetting("developerTodayDate", validDateInput(body.developerTodayDate) ? body.developerTodayDate : todayInputValue());
     return reply.redirect("/admin/settings");
+  });
+
+  app.post("/admin/reminders/send-trial", async (_request, reply) => {
+    const result = await new TrialReminderService().sendTomorrowTrialReminders();
+    return html(
+      reply,
+      "Напоминания",
+      `
+      ${adminHeader("Настройки")}
+      <section class="panel">
+        <h2>Напоминания отправлены</h2>
+        <p>Дата проверки: ${escapeHtml(result.checkedDate)}</p>
+        <p>Ищем пробные на: ${escapeHtml(result.targetDate)}</p>
+        <p>Найдено: ${result.found}</p>
+        <p>Отправлено: ${result.sent}</p>
+        <p><a href="/admin/settings">Вернуться в настройки</a></p>
+      </section>
+      `
+    );
   });
 
   app.post("/admin/moyklass/sync-courses", async (_request, reply) => {
