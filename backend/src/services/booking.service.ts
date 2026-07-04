@@ -105,6 +105,11 @@ export class BookingService {
     };
   }
 
+  private async getPaymentTestMode(): Promise<boolean> {
+    const setting = await this.db.appSetting.findUnique({ where: { key: "paymentTestMode" } });
+    return typeof setting?.value === "boolean" ? setting.value : env.PAYMENT_TEST_MODE;
+  }
+
   async createDraftBooking(input: BookingDraftInput) {
     const parent = await this.db.parent.findUniqueOrThrow({ where: { id: input.parentId } });
     const child = await this.db.child.create({
@@ -183,19 +188,32 @@ export class BookingService {
 
     if (order.status === OrderStatus.paid || order.status === OrderStatus.pay_on_site) return order.payment;
 
-    const chargedKopecks = env.PAYMENT_TEST_MODE ? 100 : order.totalKopecks;
+    const paymentTestMode = await this.getPaymentTestMode();
+    const chargedKopecks = paymentTestMode ? 100 : order.totalKopecks;
+    const receiptItems = paymentTestMode
+      ? [
+          {
+            Name: "тест",
+            Price: chargedKopecks,
+            Quantity: 1,
+            Amount: chargedKopecks,
+            Tax: "none" as const
+          }
+        ]
+      : order.items.map((item) => ({
+          Name: item.title,
+          Price: item.amountKopecks,
+          Quantity: 1,
+          Amount: item.amountKopecks,
+          Tax: "none" as const
+        }));
+
     const payment = await this.tbank.initPayment({
       orderId: order.id,
       amountKopecks: chargedKopecks,
-      description: `Пробное занятие Codorobot, ${order.items.length} дет.`,
+      description: paymentTestMode ? "тест" : "Оплата пробного занятия",
       customerPhone: order.parent.phone,
-      receiptItems: order.items.map((item) => ({
-        Name: item.title,
-        Price: env.PAYMENT_TEST_MODE ? Math.floor(chargedKopecks / order.items.length) : item.amountKopecks,
-        Quantity: 1,
-        Amount: env.PAYMENT_TEST_MODE ? Math.floor(chargedKopecks / order.items.length) : item.amountKopecks,
-        Tax: "none"
-      }))
+      receiptItems
     });
 
     return this.db.payment.upsert({
