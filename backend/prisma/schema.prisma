@@ -89,6 +89,7 @@ model Branch {
   code        String         @unique
   name        String
   address     String
+  mapUrl      String?
   moyklassId  Int            @unique
   baseUrl     String
   active      Boolean        @default(true)

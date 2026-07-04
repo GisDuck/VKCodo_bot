@@ -93,12 +93,12 @@ export class VkMessageService {
 
   async sendBranchOptions(
     peerId: number,
-    branches: Array<{ id: string; name: string }>,
+    branches: Array<{ id: string; name: string; address: string; mapUrl?: string | null }>,
     editButtons: Button[] = []
   ): Promise<void> {
     await this.sendKeyboard(
       peerId,
-      "По какому адресу Вам удобнее будет нас посетить?",
+      buildBranchOptionsMessage(branches),
       [
         ...branches.map((branch) => ({
           label: branch.name,
@@ -112,12 +112,12 @@ export class VkMessageService {
 
   async sendBranchOptionsWithInlineEdits(
     peerId: number,
-    branches: Array<{ id: string; name: string }>,
+    branches: Array<{ id: string; name: string; address: string; mapUrl?: string | null }>,
     editButtons: Button[]
   ): Promise<void> {
     await this.sendInlineKeyboard(
       peerId,
-      "По какому адресу Вам удобнее будет нас посетить?",
+      buildBranchOptionsMessage(branches),
       editButtons
     );
     await this.sendKeyboard(
@@ -333,4 +333,20 @@ export function labelToPrimaryCourseOption(label: string) {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildBranchOptionsMessage(branches: Array<{ name: string; address: string; mapUrl?: string | null }>): string {
+  const lines = branches.map((branch) => {
+    const address = capitalizeFirst(branch.address);
+    const map = branch.mapUrl ? ` (${branch.mapUrl})` : "";
+    return `${branch.name}: ${address}${map}`;
+  });
+
+  return ["По какому адресу Вам удобнее будет нас посетить?", "", ...lines].join("\n");
+}
+
+function capitalizeFirst(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return `${trimmed[0].toLocaleUpperCase("ru-RU")}${trimmed.slice(1)}`;
 }

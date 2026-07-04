@@ -1020,12 +1020,14 @@ export class VkBotService {
     const bookings = await this.getVisibleTrialBookings(parentId);
     if (bookings.length === 0) {
       await this.messages.sendText(peerId, "Пока активных записей нет");
+      await this.renderChildrenMenu(parentId, peerId);
       return;
     }
 
     for (const booking of bookings) {
       await this.messages.sendText(peerId, this.menu.renderTrialChild(booking));
     }
+    await this.renderChildrenMenu(parentId, peerId);
   }
 
   private async askWhichBookingToReschedule(parentId: string, peerId: number) {

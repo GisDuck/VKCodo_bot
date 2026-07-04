@@ -310,6 +310,7 @@ export async function adminRoutes(app: FastifyInstance) {
                 <input type="hidden" name="${branch.id}:id" value="${branch.id}" />
                 <label>Название <input name="${branch.id}:name" value="${escapeHtml(branch.name)}" /></label>
                 <label>Адрес <input name="${branch.id}:address" value="${escapeHtml(branch.address)}" /></label>
+                <label>Ссылка на Яндекс Карты <input name="${branch.id}:mapUrl" value="${escapeHtml(branch.mapUrl ?? "")}" /></label>
                 <label>ID МойКласс <input name="${branch.id}:moyklassId" value="${branch.moyklassId}" /></label>
                 <label>Base URL <input name="${branch.id}:baseUrl" value="${escapeHtml(branch.baseUrl)}" /></label>
               </fieldset>
@@ -333,6 +334,7 @@ export async function adminRoutes(app: FastifyInstance) {
         data: {
           name: body[`${id}:name`],
           address: body[`${id}:address`],
+          mapUrl: emptyToNull(body[`${id}:mapUrl`] ?? ""),
           moyklassId: Number.parseInt(body[`${id}:moyklassId`], 10),
           baseUrl: body[`${id}:baseUrl`]
         }
