@@ -398,6 +398,61 @@ export class VkBotService {
     });
   }
 
+  private async resendBranchOptions(peerId: number) {
+    const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+    await this.messages.sendBranchOptions(peerId, branches);
+  }
+
+  private async resendCourseOptions(peerId: number, draft: SessionDraft, ageOverride?: number) {
+    const age = ageOverride ?? draft.currentChild?.age;
+    if (!age) {
+      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага.");
+      return;
+    }
+
+    await this.messages.sendCourseOptions(peerId, age, this.courseRouter.getAvailableOptions(age));
+  }
+
+  private async resendSubCourseOptions(peerId: number, draft: SessionDraft, ageOverride?: number) {
+    const age = ageOverride ?? draft.currentChild?.age;
+    const option = draft.selectedOption as PrimaryCourseOption | undefined;
+    if (!age || !option) {
+      await this.resendCourseOptions(peerId, draft, age);
+      return;
+    }
+
+    const resolution = this.courseRouter.resolveCourse(age, option);
+    if (resolution.kind !== "needs_subchoice") {
+      await this.resendCourseOptions(peerId, draft, age);
+      return;
+    }
+
+    await this.messages.sendSubCourseOptions(peerId, resolution.options, age, option);
+  }
+
+  private async handleCourseSubChoice(
+    parentId: string,
+    peerId: number,
+    draft: SessionDraft,
+    payload: Record<string, unknown>
+  ) {
+    const age = draft.currentChild?.age;
+    const option = draft.selectedOption as PrimaryCourseOption | undefined;
+    const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
+    if (!age || !option || !subChoice) {
+      await this.resendSubCourseOptions(peerId, draft);
+      return;
+    }
+
+    const resolution = this.courseRouter.resolveCourse(age, option, subChoice);
+    if (resolution.kind === "course") {
+      await this.setCourseAndAskConfirm(parentId, peerId, draft, resolution.courseCode);
+      return;
+    }
+
+    await this.resendSubCourseOptions(peerId, draft);
+  }
+
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     if (!text) {
       await this.messages.sendText(peerId, "Напишите, пожалуйста, имя родителя.");
@@ -542,7 +597,7 @@ export class VkBotService {
     }
 
     if (!branchId) {
-      await this.messages.sendText(peerId, "Выберите филиал кнопкой.");
+      await this.resendBranchOptions(peerId);
       return;
     }
 
@@ -565,9 +620,14 @@ export class VkBotService {
     text: string
   ) {
     const age = draft.currentChild?.age;
+    if (payload.action === "course_subchoice") {
+      await this.handleCourseSubChoice(parentId, peerId, draft, payload);
+      return;
+    }
+
     const option = this.resolvePrimaryOption(payload, text);
     if (!age || !option) {
-      await this.messages.sendText(peerId, "Выберите курс кнопкой.");
+      await this.resendCourseOptions(peerId, draft);
       return;
     }
 
@@ -593,7 +653,10 @@ export class VkBotService {
       const age = draft.currentChild?.age;
       const option = draft.selectedOption;
       const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
-      if (!age || !option || !subChoice) return;
+      if (!age || !option || !subChoice) {
+        await this.resendSubCourseOptions(peerId, draft);
+        return;
+      }
       const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.setCourseAndAskConfirm(parentId, peerId, draft, resolution.courseCode);
@@ -603,7 +666,7 @@ export class VkBotService {
 
     const accepted = this.resolveCourseConfirm(payload, text);
     if (accepted === null) {
-      await this.messages.sendText(peerId, "Подтвердите курс кнопкой.");
+      await this.messages.sendKeyboard(peerId, "Устраивает ли вас курс?", this.messages.buildCourseConfirmButtons());
       return;
     }
 
@@ -852,7 +915,10 @@ export class VkBotService {
     if (payload.action === "course_subchoice") {
       const option = draft.selectedOption;
       const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
-      if (!age || !option || !subChoice) return;
+      if (!age || !option || !subChoice) {
+        await this.resendSubCourseOptions(peerId, draft, age ?? undefined);
+        return;
+      }
       const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.askChangeCourseConfirm(parentId, peerId, draft.changeBookingId!, resolution.courseCode);
@@ -862,7 +928,7 @@ export class VkBotService {
 
     const option = this.resolvePrimaryOption(payload, text);
     if (!age || !option) {
-      await this.messages.sendText(peerId, "Выберите новый курс кнопкой.");
+      await this.resendCourseOptions(peerId, draft, age ?? undefined);
       return;
     }
 
@@ -894,7 +960,10 @@ export class VkBotService {
       const age = booking.child.age;
       const option = draft.selectedOption;
       const subChoice = typeof payload.subChoice === "string" ? (payload.subChoice as SubCourseOption) : undefined;
-      if (!age || !option || !subChoice) return;
+      if (!age || !option || !subChoice) {
+        await this.resendSubCourseOptions(peerId, draft, age ?? undefined);
+        return;
+      }
       const resolution = this.courseRouter.resolveCourse(age, option as PrimaryCourseOption, subChoice);
       if (resolution.kind === "course") {
         await this.askChangeCourseConfirm(parentId, peerId, draft.changeBookingId!, resolution.courseCode);
@@ -904,7 +973,7 @@ export class VkBotService {
 
     const accepted = this.resolveCourseConfirm(payload, text);
     if (accepted === null) {
-      await this.messages.sendText(peerId, "Подтвердите новый курс кнопкой.");
+      await this.messages.sendKeyboard(peerId, "Поменять запись на этот курс?", this.messages.buildCourseConfirmButtons());
       return;
     }
 
