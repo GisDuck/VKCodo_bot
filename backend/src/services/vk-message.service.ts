@@ -10,7 +10,12 @@ type Button = {
   color?: "primary" | "secondary" | "positive" | "negative";
 };
 
+const MESSAGE_CHAIN_DELAY_MS = 2_000;
+
 export class VkMessageService {
+  private static readonly peerSendQueues = new Map<number, Promise<void>>();
+  private static readonly peerLastSentAt = new Map<number, number>();
+
   private readonly vk = new VK({ token: env.VK_GROUP_TOKEN || "not-configured" });
   private readonly log = new VkEventLogService();
 
@@ -105,6 +110,27 @@ export class VkMessageService {
     );
   }
 
+  async sendBranchOptionsWithInlineEdits(
+    peerId: number,
+    branches: Array<{ id: string; name: string }>,
+    editButtons: Button[]
+  ): Promise<void> {
+    await this.sendInlineKeyboard(
+      peerId,
+      "По какому адресу Вам удобнее будет нас посетить?",
+      editButtons
+    );
+    await this.sendKeyboard(
+      peerId,
+      "Выберите филиал:",
+      branches.map((branch) => ({
+        label: branch.name,
+        payload: { action: "branch", branchId: branch.id },
+        color: "secondary" as const
+      }))
+    );
+  }
+
   async sendMainMenu(peerId: number): Promise<void> {
     await this.sendKeyboard(peerId, "Главное меню", [
       { label: "Мои дети", payload: { action: "children" }, color: "primary" }
@@ -128,6 +154,16 @@ export class VkMessageService {
       payload: { action: "edit_field", field: item.field },
       color: "secondary" as const
     }));
+  }
+
+  buildCancelAdditionalChildButtons(): Button[] {
+    return [
+      {
+        label: "Отмена",
+        payload: { action: "cancel_add_child" },
+        color: "negative"
+      }
+    ];
   }
 
   buildLessonButtons(lessons: Array<{ id: number; classId: number }>) {
@@ -188,6 +224,26 @@ export class VkMessageService {
   }
 
   private async send(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
+    const previous = VkMessageService.peerSendQueues.get(peerId) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(() => this.sendQueued(peerId, message, keyboard));
+
+    VkMessageService.peerSendQueues.set(
+      peerId,
+      next.finally(() => {
+        if (VkMessageService.peerSendQueues.get(peerId) === next) {
+          VkMessageService.peerSendQueues.delete(peerId);
+        }
+      })
+    );
+
+    await next;
+  }
+
+  private async sendQueued(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
+    await this.waitForMessageGap(peerId);
+
     await this.log.write("vk_send", {
       peerId,
       message,
@@ -205,9 +261,23 @@ export class VkMessageService {
       message,
       keyboard
     });
+
+    VkMessageService.peerLastSentAt.set(peerId, Date.now());
+  }
+
+  private async waitForMessageGap(peerId: number) {
+    const lastSentAt = VkMessageService.peerLastSentAt.get(peerId);
+    if (!lastSentAt) return;
+
+    const delayMs = MESSAGE_CHAIN_DELAY_MS - (Date.now() - lastSentAt);
+    if (delayMs > 0) await sleep(delayMs);
   }
 }
 
 export function labelToPrimaryCourseOption(label: string) {
   return Object.entries(COURSE_OPTION_LABELS).find(([, value]) => value === label)?.[0];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

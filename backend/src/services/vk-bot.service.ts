@@ -51,6 +51,7 @@ type SessionDraft = {
 };
 
 const ADDITIONAL_CHILD_TIMEOUT_MS = 60 * 60_000;
+const SLOW_MOYKLASS_NOTICE_MS = 20_000;
 
 export class VkBotService {
   private readonly courseRouter = new CourseRouterService();
@@ -135,6 +136,11 @@ export class VkBotService {
       }
 
       if (draft.additionalChild && this.isCancelText(text)) {
+        await this.cancelAdditionalChildFlow(parent.id, message.peer_id, draft);
+        return;
+      }
+
+      if (payload.action === "cancel_add_child" && draft.additionalChild) {
         await this.cancelAdditionalChildFlow(parent.id, message.peer_id, draft);
         return;
       }
@@ -350,7 +356,11 @@ export class VkBotService {
       currentChild: {},
       additionalChild: true
     });
-    await this.messages.sendText(peerId, `${parent.name}, как зовут ребенка, которого хотите записать на пробное?`);
+    await this.messages.sendInlineKeyboard(
+      peerId,
+      `${parent.name}, как зовут ребенка, которого хотите записать на пробное?`,
+      this.messages.buildCancelAdditionalChildButtons()
+    );
   }
 
   private isAdditionalChildFlowTimedOut(updatedAt: Date, state: string, draft: SessionDraft): boolean {
@@ -398,9 +408,13 @@ export class VkBotService {
     });
   }
 
-  private async resendBranchOptions(peerId: number) {
+  private async resendBranchOptions(peerId: number, draft: SessionDraft) {
     const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
-    await this.messages.sendBranchOptions(peerId, branches);
+    await this.messages.sendBranchOptionsWithInlineEdits(
+      peerId,
+      branches,
+      this.buildEditButtons(draft, ["childAge"])
+    );
   }
 
   private async resendCourseOptions(peerId: number, draft: SessionDraft, ageOverride?: number) {
@@ -503,11 +517,7 @@ export class VkBotService {
         return;
       case "branch": {
         await this.setSession(parentId, "awaiting_branch", draft);
-        const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
-        await this.messages.sendBranchOptions(
-          peerId,
-          branches
-        );
+        await this.resendBranchOptions(peerId, draft);
         return;
       }
       default:
@@ -576,11 +586,7 @@ export class VkBotService {
     await this.setSession(parentId, "awaiting_branch", draft);
 
     await this.messages.sendTrialIntro(peerId);
-    const branches = await this.db.branch.findMany({ where: { active: true }, orderBy: { name: "asc" } });
-    await this.messages.sendBranchOptions(
-      peerId,
-      branches
-    );
+    await this.resendBranchOptions(peerId, draft);
   }
 
   private async handleBranch(
@@ -597,7 +603,7 @@ export class VkBotService {
     }
 
     if (!branchId) {
-      await this.resendBranchOptions(peerId);
+      await this.resendBranchOptions(peerId, draft);
       return;
     }
 
@@ -686,7 +692,7 @@ export class VkBotService {
     }
 
     try {
-      const list = await this.runInteractiveExternalRequest(peerId, () =>
+      const list = await this.runInteractiveMoyKlassRequest(peerId, () =>
         this.booking.getAvailableLessons(branchId, courseCode)
       );
       draft.availableLessons = list.lessons;
@@ -1078,7 +1084,7 @@ export class VkBotService {
       where: { id: bookingId, child: { parentId } }
     });
     try {
-      const list = await this.runInteractiveExternalRequest(peerId, () =>
+      const list = await this.runInteractiveMoyKlassRequest(peerId, () =>
         this.booking.getAvailableLessons(booking.branchId, courseCode)
       );
       await this.setSession(parentId, "change_lesson_select", {
@@ -1110,7 +1116,7 @@ export class VkBotService {
     }
 
     try {
-      const list = await this.runInteractiveExternalRequest(peerId, () =>
+      const list = await this.runInteractiveMoyKlassRequest(peerId, () =>
         this.booking.getAvailableLessons(branchId, courseCode)
       );
       draft.availableLessons = list.lessons;
@@ -1171,6 +1177,29 @@ export class VkBotService {
         await this.messages.sendText(peerId, "нет соединения с сервером, повторяем запрос");
       }
     });
+  }
+
+  private async runInteractiveMoyKlassRequest<T>(peerId: number, operation: () => Promise<T>): Promise<T> {
+    return this.runInteractiveExternalRequest(peerId, () =>
+      this.withSlowMoyKlassNotice(peerId, operation)
+    );
+  }
+
+  private async withSlowMoyKlassNotice<T>(peerId: number, operation: () => Promise<T>): Promise<T> {
+    let completed = false;
+    const timer = setTimeout(() => {
+      if (completed) return;
+      void this.messages
+        .sendText(peerId, "Ждем ответ от сервера, это может занять немного времени.")
+        .catch((error) => console.error("Failed to send slow MoyKlass notice", error));
+    }, SLOW_MOYKLASS_NOTICE_MS);
+
+    try {
+      return await operation();
+    } finally {
+      completed = true;
+      clearTimeout(timer);
+    }
   }
 
   private async handleInteractiveExternalFailure(
