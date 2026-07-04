@@ -107,7 +107,6 @@ export class VkMessageService {
 
   async sendMainMenu(peerId: number): Promise<void> {
     await this.sendKeyboard(peerId, "Главное меню", [
-      { label: "Записаться на пробное", payload: { action: "start_trial" }, color: "positive" },
       { label: "Мои дети", payload: { action: "children" }, color: "primary" }
     ]);
   }
@@ -149,12 +148,10 @@ export class VkMessageService {
     ];
   }
 
-  buildPaymentButtons(orderId: string, paymentUrl?: string | null) {
+  buildPaymentButtons(orderId: string) {
     const buttons: Button[] = [];
-    if (paymentUrl) {
-      buttons.push({ label: "Оплатить онлайн", payload: { action: "pay_online", orderId }, color: "positive" });
-    }
-    buttons.push({ label: "Оплатить в филиале", payload: { action: "pay_on_site", orderId }, color: "secondary" });
+    buttons.push({ label: "В школе", payload: { action: "pay_on_site", orderId }, color: "secondary" });
+    buttons.push({ label: "Карта/QR онлайн", payload: { action: "pay_online", orderId }, color: "positive" });
     buttons.push({ label: "Мои дети", payload: { action: "children" }, color: "primary" });
     return buttons;
   }

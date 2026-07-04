@@ -59,12 +59,13 @@ export class MoyKlassService {
 
   async createUser(input: MoyKlassUserInput): Promise<{ id: number }> {
     const birthday = input.childAge ? approximateBirthdayFromAge(input.childAge) : "";
+    const phone = normalizePhoneForMoyKlass(input.phone);
 
     return this.request<{ id: number }>("/users", {
       method: "POST",
       body: {
         name: input.childName,
-        phone: input.phone,
+        phone,
         filials: [input.filialId],
         responsibles: [env.MOYKLASS_MANAGER_ID || DEFAULT_MANAGER_ID],
         attributes: [
@@ -271,4 +272,12 @@ function maskAuthResponse(value: unknown): unknown {
     ...value,
     accessToken: "****"
   };
+}
+
+function normalizePhoneForMoyKlass(phone: string): string {
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 15) {
+    throw new Error("MoyKlass phone must contain 10-15 digits");
+  }
+  return digits;
 }

@@ -6,6 +6,7 @@ import { BookingService } from "./booking.service.js";
 import { MenuService } from "./menu.service.js";
 import { VkEventLogService } from "./vk-event-log.service.js";
 import { VkMessageService } from "./vk-message.service.js";
+import { formatDate, getWeekdayName } from "./lesson-format.service.js";
 
 type VkIncomingUpdate = {
   type?: string;
@@ -117,18 +118,21 @@ export class VkBotService {
 
     let stateAfter = session.state;
     try {
-      if (payload.action === "start_trial" || (session.state === "idle" && this.isStartCommand(text))) {
-        await this.setSession(parent.id, "awaiting_parent_name", {});
-        stateAfter = "awaiting_parent_name";
-        await this.messages.sendText(
-          message.peer_id,
-          "Вас приветствует Бот школы Кодология во Всеволожске и Янино! Давайте познакомимся, как Вас зовут?"
-        );
+      if (payload.action === "start_trial") {
+        if (session.state !== "idle") {
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          return;
+        }
+        stateAfter = await this.handleIdleState(parent.id, message.peer_id);
         return;
       }
 
       if (payload.action === "children") {
-        await this.renderChildrenMenu(parent.id, message.peer_id);
+        if (session.state !== "idle") {
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          return;
+        }
+        stateAfter = await this.handleIdleState(parent.id, message.peer_id);
         return;
       }
 
@@ -152,7 +156,7 @@ export class VkBotService {
       }
 
       if (payload.action === "pay_on_site" && typeof payload.orderId === "string") {
-        await this.handlePayOnSite(message.peer_id, payload.orderId);
+        await this.handlePayOnSite(parent.id, message.peer_id, payload.orderId);
         return;
       }
 
@@ -224,8 +228,7 @@ export class VkBotService {
   ): Promise<string> {
     switch (state) {
       case "idle":
-        await this.messages.sendMainMenu(peerId);
-        return state;
+        return this.handleIdleState(parentId, peerId);
       case "awaiting_parent_name":
         await this.handleParentName(parentId, peerId, draft, text);
         return "awaiting_phone";
@@ -263,13 +266,37 @@ export class VkBotService {
         await this.handleChangeLessonSelection(parentId, peerId, draft, payload, text);
         return "idle";
       case "order_ready":
-        await this.messages.sendText(peerId, "Заказ уже собран. Выберите оплату онлайн или в филиале.");
+        await this.messages.sendText(peerId, "Заказ уже собран. Выберите способ оплаты кнопкой.");
         return state;
       default:
         await this.setSession(parentId, "idle", {});
-        await this.messages.sendMainMenu(peerId);
-        return "idle";
+        return this.handleIdleState(parentId, peerId);
     }
+  }
+
+  private async handleIdleState(parentId: string, peerId: number): Promise<string> {
+    if (await this.hasVisibleChildrenMenu(parentId)) {
+      await this.renderChildrenMenu(parentId, peerId);
+      return "idle";
+    }
+
+    await this.startTrial(parentId, peerId);
+    return "awaiting_parent_name";
+  }
+
+  private async startTrial(parentId: string, peerId: number) {
+    await this.setSession(parentId, "awaiting_parent_name", {});
+    await this.messages.sendText(
+      peerId,
+      "Вас приветствует Бот школы Кодология во Всеволожске и Янино! Давайте познакомимся, как Вас зовут?"
+    );
+  }
+
+  private async hasVisibleChildrenMenu(parentId: string): Promise<boolean> {
+    const count = await this.db.trialBooking.count({
+      where: { child: { parentId }, status: { not: "cancelled" } }
+    });
+    return count > 0;
   }
 
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -519,7 +546,7 @@ export class VkBotService {
   ) {
     const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
     if (!lessonId) {
-      await this.messages.sendText(peerId, "Выберите дату кнопкой с номером.");
+      await this.resendLessonOptions(peerId, draft, "Выберите дату кнопкой с номером.");
       return;
     }
 
@@ -567,7 +594,12 @@ export class VkBotService {
     });
 
     await this.setSession(parentId, "order_ready", { bookingIds: draft.bookingIds });
-    await this.messages.sendKeyboard(peerId, summary, this.messages.buildPaymentButtons(order.id));
+    await this.messages.sendText(peerId, summary);
+    await this.messages.sendKeyboard(
+      peerId,
+      this.buildPaymentChoiceMessage(order.items.every((item) => item.booking.branch.code === "YANINO")),
+      this.messages.buildPaymentButtons(order.id)
+    );
   }
 
   private async setCourseAndAskConfirm(
@@ -590,21 +622,51 @@ export class VkBotService {
     await this.messages.sendKeyboard(peerId, "Устраивает ли вас курс?", this.messages.buildCourseConfirmButtons());
   }
 
+  private buildPaymentChoiceMessage(isYanino: boolean): string {
+    if (isYanino) {
+      return "Выберите способ оплаты: В школе можно оплатить наличными, картой, СБП, QR. А онлайн мы принимаем карту, СБП, QR.";
+    }
+
+    return "Выберите способ оплаты: В школе можно оплатить наличными. А онлайн мы принимаем карту, СБП, QR.";
+  }
+
+  private async resendLessonOptions(peerId: number, draft: SessionDraft, message: string) {
+    const lessons = draft.availableLessons ?? [];
+    if (lessons.length === 0) {
+      await this.sendNoLessonsMessage(peerId);
+      return;
+    }
+
+    await this.messages.sendKeyboard(
+      peerId,
+      `${message}\n\n${this.formatLessonOptions(lessons)}`,
+      this.messages.buildLessonButtons(lessons)
+    );
+  }
+
+  private formatLessonOptions(lessons: Array<{ date: string; beginTime: string }>): string {
+    return lessons
+      .map((lesson, index) => `${index + 1}. ${formatDate(lesson.date)} в ${lesson.beginTime} ${getWeekdayName(lesson.date)}`)
+      .join("\n");
+  }
+
   private async handleOnlinePayment(peerId: number, orderId: string) {
     try {
       const payment = await this.booking.initOnlinePayment(orderId);
       await this.messages.sendKeyboard(peerId, `Ссылка на оплату:\n${payment?.paymentUrl ?? ""}`, [
-        { label: "Оплатить в филиале", payload: { action: "pay_on_site", orderId }, color: "secondary" }
+        { label: "В школе", payload: { action: "pay_on_site", orderId }, color: "secondary" }
       ]);
     } catch (error) {
       await this.messages.sendText(peerId, `Не удалось создать ссылку оплаты: ${this.errorMessage(error)}`);
     }
   }
 
-  private async handlePayOnSite(peerId: number, orderId: string) {
+  private async handlePayOnSite(parentId: string, peerId: number, orderId: string) {
     try {
       await this.booking.markPayOnSite(orderId);
+      await this.setSession(parentId, "idle", {});
       await this.messages.sendText(peerId, "Готово, записали. Оплатить можно будет в филиале.");
+      await this.renderChildrenMenu(parentId, peerId);
     } catch (error) {
       await this.messages.sendText(peerId, `Не удалось подтвердить оплату в филиале: ${this.errorMessage(error)}`);
     }
@@ -729,7 +791,7 @@ export class VkBotService {
   ) {
     const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
     if (!lessonId) {
-      await this.messages.sendText(peerId, "Выберите новую дату кнопкой с номером.");
+      await this.resendLessonOptions(peerId, draft, "Выберите новую дату кнопкой с номером.");
       return;
     }
 
@@ -970,10 +1032,6 @@ export class VkBotService {
     const index = Number.parseInt(text, 10);
     if (!Number.isInteger(index) || index < 1) return null;
     return lessons?.[index - 1]?.id ?? null;
-  }
-
-  private isStartCommand(text: string): boolean {
-    return /^(начать|старт|записаться|записать|запись)$/i.test(text.trim());
   }
 
   private isDuplicate(eventKey: string): boolean {
