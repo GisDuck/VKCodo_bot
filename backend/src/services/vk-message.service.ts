@@ -115,19 +115,17 @@ export class VkMessageService {
     branches: Array<{ id: string; name: string; address: string; mapUrl?: string | null }>,
     editButtons: Button[]
   ): Promise<void> {
-    await this.sendInlineKeyboard(
-      peerId,
-      buildBranchOptionsMessage(branches),
-      editButtons
-    );
     await this.sendKeyboard(
       peerId,
-      "Выберите филиал:",
-      branches.map((branch) => ({
-        label: branch.name,
-        payload: { action: "branch", branchId: branch.id },
-        color: "secondary" as const
-      }))
+      buildBranchOptionsMessage(branches),
+      [
+        ...branches.map((branch) => ({
+          label: branch.name,
+          payload: { action: "branch", branchId: branch.id },
+          color: "secondary" as const
+        })),
+        ...editButtons
+      ]
     );
   }
 
@@ -338,7 +336,7 @@ function sleep(ms: number): Promise<void> {
 function buildBranchOptionsMessage(branches: Array<{ name: string; address: string; mapUrl?: string | null }>): string {
   const lines = branches.map((branch) => {
     const address = capitalizeFirst(branch.address);
-    const map = branch.mapUrl ? ` (${branch.mapUrl})` : "";
+    const map = branch.mapUrl ? `\n(${branch.mapUrl})` : "";
     return `${branch.name}: ${address}${map}`;
   });
 
