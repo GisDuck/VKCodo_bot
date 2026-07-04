@@ -40,13 +40,32 @@ export class MoyKlassSyncQueueService {
       });
 
       for (const step of STEPS) {
-        await this.db.moyKlassSyncStep.upsert({
-          where: { jobId_step: { jobId: job.id, step } },
-          update: {},
-          create: {
-            jobId: job.id,
-            step,
-            status: source === "pay_on_site" && step === "create_payment" ? "not_required" : "pending"
+        const shouldSkipPayment = source === "pay_on_site" && step === "create_payment";
+        const savedStep = await this.db.moyKlassSyncStep.findUnique({
+          where: { jobId_step: { jobId: job.id, step } }
+        });
+
+        if (!savedStep) {
+          await this.db.moyKlassSyncStep.create({
+            data: {
+              jobId: job.id,
+              step,
+              status: shouldSkipPayment ? "not_required" : "pending"
+            }
+          });
+          continue;
+        }
+
+        if (savedStep.status === "done") continue;
+
+        const nextStatus =
+          shouldSkipPayment ? "not_required" : step === "create_payment" && savedStep.status === "not_required" ? "pending" : savedStep.status;
+
+        await this.db.moyKlassSyncStep.update({
+          where: { id: savedStep.id },
+          data: {
+            status: nextStatus,
+            lastError: null
           }
         });
       }

@@ -186,7 +186,7 @@ export class BookingService {
       }
     });
 
-    if (order.status === OrderStatus.paid || order.status === OrderStatus.pay_on_site) return order.payment;
+    if (order.status === OrderStatus.paid) return order.payment;
 
     const paymentTestMode = await this.getPaymentTestMode();
     const chargedKopecks = paymentTestMode ? 100 : order.totalKopecks;
@@ -216,27 +216,34 @@ export class BookingService {
       receiptItems
     });
 
-    return this.db.payment.upsert({
-      where: { orderId: order.id },
-      update: {
-        method: PaymentMethod.online,
-        status: PaymentStatus.pending,
-        realAmountKopecks: order.totalKopecks,
-        chargedKopecks,
-        tbankPaymentId: payment.paymentId,
-        tbankOrderId: payment.orderId,
-        paymentUrl: payment.paymentUrl
-      },
-      create: {
-        orderId: order.id,
-        method: PaymentMethod.online,
-        status: PaymentStatus.pending,
-        realAmountKopecks: order.totalKopecks,
-        chargedKopecks,
-        tbankPaymentId: payment.paymentId,
-        tbankOrderId: payment.orderId,
-        paymentUrl: payment.paymentUrl
-      }
+    return this.db.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.awaiting_payment }
+      });
+
+      return tx.payment.upsert({
+        where: { orderId: order.id },
+        update: {
+          method: PaymentMethod.online,
+          status: PaymentStatus.pending,
+          realAmountKopecks: order.totalKopecks,
+          chargedKopecks,
+          tbankPaymentId: payment.paymentId,
+          tbankOrderId: payment.orderId,
+          paymentUrl: payment.paymentUrl
+        },
+        create: {
+          orderId: order.id,
+          method: PaymentMethod.online,
+          status: PaymentStatus.pending,
+          realAmountKopecks: order.totalKopecks,
+          chargedKopecks,
+          tbankPaymentId: payment.paymentId,
+          tbankOrderId: payment.orderId,
+          paymentUrl: payment.paymentUrl
+        }
+      });
     });
   }
 
@@ -352,6 +359,35 @@ export class BookingService {
         moyklassJoinId: null,
         moyklassLessonRecordId: null
       }
+    });
+  }
+
+  async releaseLessonRecord(bookingId: string) {
+    const booking = await this.db.trialBooking.findUniqueOrThrow({ where: { id: bookingId } });
+    if (booking.moyklassLessonRecordId) {
+      await this.moyKlass.cancelLessonRecord(booking.moyklassLessonRecordId).catch(() => undefined);
+    }
+    await this.db.trialBooking.update({
+      where: { id: bookingId },
+      data: { moyklassLessonRecordId: null }
+    });
+  }
+
+  async syncLessonRecordForBooking(bookingId: string) {
+    const booking = await this.db.trialBooking.findUniqueOrThrow({
+      where: { id: bookingId },
+      include: { child: true }
+    });
+    if (!booking.child.moyklassUserId || !booking.moyklassLessonId) return;
+
+    const record = await this.moyKlass.createLessonRecord({
+      userId: booking.child.moyklassUserId,
+      lessonId: booking.moyklassLessonId
+    });
+
+    await this.db.trialBooking.update({
+      where: { id: bookingId },
+      data: { moyklassLessonRecordId: record.id }
     });
   }
 

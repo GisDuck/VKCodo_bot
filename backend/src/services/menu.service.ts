@@ -15,20 +15,23 @@ type TrialMenuInput = TrialBooking & {
 
 export class MenuService {
   renderTrialChild(booking: TrialMenuInput): string {
-    const courseUrl = `${booking.branch.baseUrl}${booking.botCourse.defaultUrl}`;
-    const paymentStatus = this.renderPaymentStatus(booking.orderItem?.order.payment ?? null);
+    const courseUrl = stripProtocol(`${booking.branch.baseUrl}${booking.botCourse.defaultUrl}`);
     const lessonDate = booking.lessonDate
-      ? `${booking.lessonDate.toLocaleDateString("ru-RU")} в ${booking.lessonBeginTime ?? ""}`.trim()
+      ? `${formatRelativeLessonDate(booking.lessonDate)} в ${booking.lessonBeginTime ?? ""}`.trim()
       : "дата не выбрана";
-
-    return [
+    const payment = booking.orderItem?.order.payment ?? null;
+    const lines = [
       `Пробное занятие для ${booking.child.name}`,
-      `Филиал: ${booking.branch.name}, ${booking.branch.address}`,
-      `Курс: ${booking.botCourse.title}`,
-      `Дата пробного: ${lessonDate}`,
-      `Оплата: ${paymentStatus}`,
-      `Описание курса: ${courseUrl}`
-    ].join("\n");
+      `${booking.branch.name}, ${booking.branch.address}`,
+      lessonDate,
+      `${booking.botCourse.title} (${courseUrl})`
+    ];
+
+    if (payment?.method === "on_site" && payment.status !== "paid") {
+      lines.push("Оплата в школе");
+    }
+
+    return lines.join("\n");
   }
 
   renderActiveStudent(input: {
@@ -59,11 +62,35 @@ export class MenuService {
     return [`Проверьте запись:`, ...lines, `Итого: ${kopecksToRubles(input.totalKopecks)}`].join("\n");
   }
 
-  private renderPaymentStatus(payment: Payment | null): string {
-    if (!payment) return "ожидает выбора способа оплаты";
-    if (payment.status === "paid") return "оплачено";
-    if (payment.method === "on_site") return "оплата в филиале";
-    if (payment.status === "pending") return "ожидает онлайн-оплаты";
-    return payment.status;
-  }
+}
+
+const weekdayForms = [
+  { current: "это воскресенье", next: "следующее воскресенье" },
+  { current: "этот понедельник", next: "следующий понедельник" },
+  { current: "этот вторник", next: "следующий вторник" },
+  { current: "эту среду", next: "следующую среду" },
+  { current: "этот четверг", next: "следующий четверг" },
+  { current: "эту пятницу", next: "следующую пятницу" },
+  { current: "эту субботу", next: "следующую субботу" }
+];
+
+function formatRelativeLessonDate(date: Date): string {
+  const today = startOfDay(new Date());
+  const lesson = startOfDay(date);
+  const diffDays = Math.round((lesson.getTime() - today.getTime()) / 86_400_000);
+  const dateText = date.toLocaleDateString("ru-RU");
+  const weekday = weekdayForms[lesson.getDay()];
+
+  if (diffDays >= 0 && diffDays <= 6) return `В ${weekday.current} (${dateText})`;
+  if (diffDays >= 7 && diffDays <= 13) return `В ${weekday.next} (${dateText})`;
+
+  return `${dateText}`;
+}
+
+function startOfDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function stripProtocol(url: string): string {
+  return url.replace(/^https?:\/\//i, "");
 }

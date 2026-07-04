@@ -1,4 +1,4 @@
-import { BotCourseCode, Prisma, PrismaClient } from "@prisma/client";
+import { BotCourseCode, Prisma, PrismaClient, type Payment } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import type { PrimaryCourseOption, SubCourseOption } from "../domain/catalog.js";
 import { CourseRouterService } from "./course-router.service.js";
@@ -431,8 +431,8 @@ export class VkBotService {
     await this.messages.sendInlineKeyboard(
       peerId,
       count === 1
-        ? `${draft.parentName ?? ""}, приятно познакомиться! Как зовут вашего ребенка?`.trim()
-        : `${draft.parentName ?? ""}, приятно познакомиться! Как зовут первого ребенка?`.trim(),
+        ? "Как зовут вашего ребенка?"
+        : "Как зовут первого ребенка?",
       this.buildEditButtons(draft, ["childrenCount"])
     );
   }
@@ -751,7 +751,7 @@ export class VkBotService {
     await this.messages.sendKeyboard(
       peerId,
       this.menu.renderTrialChild(booking),
-      this.messages.buildTrialMenuButtons(booking.id)
+      this.messages.buildTrialMenuButtons(booking.id, this.getTrialMenuButtonOptions(booking))
     );
   }
 
@@ -897,20 +897,30 @@ export class VkBotService {
       data.botCourseId = course.id;
     }
 
-    await this.booking.releaseExternalRecords(draft.changeBookingId);
+    const bookingBeforeChange = await this.db.trialBooking.findUniqueOrThrow({
+      where: { id: draft.changeBookingId },
+      include: { orderItem: { include: { order: { include: { payment: true } } } } }
+    });
+
+    await this.booking.releaseLessonRecord(draft.changeBookingId);
     await this.db.trialBooking.update({
       where: { id: draft.changeBookingId },
       data
     });
-    await this.booking.syncExternalRecordsForBooking(draft.changeBookingId).catch((error) => {
-      console.error("Failed to sync changed booking with MoyKlass", error);
+    await this.booking.syncLessonRecordForBooking(draft.changeBookingId).catch((error) => {
+      console.error("Failed to sync changed lesson record with MoyKlass", error);
     });
     await this.setSession(parentId, "idle", {});
-    await this.messages.sendText(
-      peerId,
-      "Готово, запись обновлена. Если занятие уже было оплачено, повторно платить не нужно."
-    );
+    await this.messages.sendText(peerId, this.buildRescheduleDoneMessage(bookingBeforeChange.orderItem?.order.payment ?? null));
     await this.renderChildrenMenu(parentId, peerId);
+  }
+
+  private buildRescheduleDoneMessage(payment: Payment | null): string {
+    if (payment?.method === "on_site" && payment.status !== "paid") {
+      return "Готово, запись обновлена. Вы выбрали оплату в школе. Ждем вас на пробном занятии!";
+    }
+
+    return "Готово, запись обновлена. Ждем вас на пробном занятии!";
   }
 
   private async askChangeCourseConfirm(
@@ -1086,9 +1096,20 @@ export class VkBotService {
       await this.messages.sendKeyboard(
         peerId,
         this.menu.renderTrialChild(booking),
-        this.messages.buildTrialMenuButtons(booking.id)
+        this.messages.buildTrialMenuButtons(booking.id, this.getTrialMenuButtonOptions(booking))
       );
     }
+  }
+
+  private getTrialMenuButtonOptions(booking: {
+    orderItem?: { orderId?: string; order: { payment: Payment | null } } | null;
+  }): { onlinePaymentOrderId?: string } {
+    const payment = booking.orderItem?.order.payment ?? null;
+    if (booking.orderItem?.orderId && payment?.method === "on_site" && payment.status !== "paid") {
+      return { onlinePaymentOrderId: booking.orderItem.orderId };
+    }
+
+    return {};
   }
 
   private async getSession(parentId: string) {
