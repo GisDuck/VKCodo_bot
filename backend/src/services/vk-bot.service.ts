@@ -42,12 +42,15 @@ type SessionDraft = {
   currentChild?: DraftChild;
   bookingIds?: string[];
   orderId?: string;
+  additionalChild?: boolean;
   paymentChoiceIsYanino?: boolean;
   changeBookingId?: string;
   changeCourseCode?: BotCourseCode;
   availableLessons?: Array<{ id: number; classId: number; date: string; beginTime: string }>;
   selectedOption?: string;
 };
+
+const ADDITIONAL_CHILD_TIMEOUT_MS = 60 * 60_000;
 
 export class VkBotService {
   private readonly courseRouter = new CourseRouterService();
@@ -126,6 +129,16 @@ export class VkBotService {
 
     let stateAfter = session.state;
     try {
+      if (this.isAdditionalChildFlowTimedOut(session.updatedAt, session.state, draft)) {
+        await this.cancelAdditionalChildFlow(parent.id, message.peer_id, draft, "Превышено время ожидания ответа. Повторите попытку");
+        return;
+      }
+
+      if (draft.additionalChild && this.isCancelText(text)) {
+        await this.cancelAdditionalChildFlow(parent.id, message.peer_id, draft);
+        return;
+      }
+
       if (payload.action === "start_trial") {
         if (session.state !== "idle") {
           await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
@@ -334,9 +347,55 @@ export class VkBotService {
       childrenCount: 1,
       currentIndex: 0,
       bookingIds: [],
-      currentChild: {}
+      currentChild: {},
+      additionalChild: true
     });
     await this.messages.sendText(peerId, `${parent.name}, как зовут ребенка, которого хотите записать на пробное?`);
+  }
+
+  private isAdditionalChildFlowTimedOut(updatedAt: Date, state: string, draft: SessionDraft): boolean {
+    return draft.additionalChild === true && state !== "idle" && Date.now() - updatedAt.getTime() > ADDITIONAL_CHILD_TIMEOUT_MS;
+  }
+
+  private isCancelText(text: string): boolean {
+    return ["отмена", "отменить", "стоп", "stop", "cancel"].includes(text.trim().toLowerCase());
+  }
+
+  private async cancelAdditionalChildFlow(
+    parentId: string,
+    peerId: number,
+    draft: SessionDraft,
+    message = "Запись еще одного ребенка отменена."
+  ) {
+    await this.cleanupAdditionalChildDraft(parentId, draft);
+    await this.setSession(parentId, "idle", {});
+    await this.messages.sendText(peerId, message);
+    await this.renderChildrenMenu(parentId, peerId);
+  }
+
+  private async cleanupAdditionalChildDraft(parentId: string, draft: SessionDraft) {
+    if (draft.orderId) {
+      await this.db.payment.updateMany({
+        where: { orderId: draft.orderId, status: { not: "paid" } },
+        data: { status: "cancelled" }
+      });
+      await this.db.order.updateMany({
+        where: { id: draft.orderId, parentId, status: { notIn: ["paid", "pay_on_site"] } },
+        data: { status: "cancelled" }
+      });
+    }
+
+    const bookingIds = draft.bookingIds ?? [];
+    if (bookingIds.length === 0) return;
+
+    await this.db.trialBooking.updateMany({
+      where: {
+        id: { in: bookingIds },
+        child: { parentId },
+        status: { in: ["draft", "awaiting_payment"] }
+      },
+      data: { status: "cancelled" }
+    });
   }
 
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -638,6 +697,7 @@ export class VkBotService {
     await this.setSession(parentId, "order_ready", {
       bookingIds: draft.bookingIds,
       orderId: order.id,
+      additionalChild: draft.additionalChild,
       paymentChoiceIsYanino: order.items.every((item) => item.booking.branch.code === "YANINO")
     });
     await this.messages.sendText(peerId, summary);
