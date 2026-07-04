@@ -60,6 +60,11 @@ export class VkBotService {
 
   constructor(private readonly db: PrismaClient = prisma) {}
 
+  async showTrialMenuForParent(parentId: string, peerId: number): Promise<void> {
+    await this.setSession(parentId, "idle", {});
+    await this.renderChildrenMenu(parentId, peerId);
+  }
+
   async handleUpdate(update: VkIncomingUpdate): Promise<void> {
     if (update.type !== "message_new") return;
 
@@ -165,6 +170,20 @@ export class VkBotService {
 
       if (payload.action === "cancel_booking" && typeof payload.bookingId === "string") {
         await this.handleCancelBooking(message.peer_id, payload.bookingId);
+        return;
+      }
+
+      if (payload.action === "booking_details" && typeof payload.bookingId === "string") {
+        await this.handleBookingDetails(parent.id, message.peer_id, payload.bookingId);
+        return;
+      }
+
+      if (payload.action === "add_child") {
+        if (session.state !== "idle") {
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          return;
+        }
+        await this.startAdditionalChild(parent.id, message.peer_id);
         return;
       }
 
@@ -300,6 +319,24 @@ export class VkBotService {
       where: { child: { parentId }, status: { not: "cancelled" } }
     });
     return count > 0;
+  }
+
+  private async startAdditionalChild(parentId: string, peerId: number) {
+    const parent = await this.db.parent.findUniqueOrThrow({ where: { id: parentId } });
+    if (!parent.name || !parent.phone) {
+      await this.startTrial(parentId, peerId);
+      return;
+    }
+
+    await this.setSession(parentId, "awaiting_child_name", {
+      parentName: parent.name,
+      phone: parent.phone,
+      childrenCount: 1,
+      currentIndex: 0,
+      bookingIds: [],
+      currentChild: {}
+    });
+    await this.messages.sendText(peerId, `${parent.name}, как зовут ребенка, которого хотите записать на пробное?`);
   }
 
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
@@ -700,6 +737,24 @@ export class VkBotService {
     }
   }
 
+  private async handleBookingDetails(parentId: string, peerId: number, bookingId: string) {
+    const booking = await this.db.trialBooking.findFirstOrThrow({
+      where: { id: bookingId, child: { parentId }, status: { not: "cancelled" } },
+      include: {
+        child: true,
+        branch: true,
+        botCourse: true,
+        orderItem: { include: { order: { include: { payment: true } } } }
+      }
+    });
+
+    await this.messages.sendKeyboard(
+      peerId,
+      this.menu.renderTrialChild(booking),
+      this.messages.buildTrialMenuButtons(booking.id)
+    );
+  }
+
   private async handleChangeCourseStart(parentId: string, peerId: number, bookingId: string) {
     const booking = await this.db.trialBooking.findFirstOrThrow({
       where: { id: bookingId, child: { parentId } },
@@ -942,6 +997,16 @@ export class VkBotService {
       return;
     }
 
+    const orderStatus = await this.db.order.findUnique({
+      where: { id: orderId },
+      select: { status: true }
+    });
+    if (orderStatus?.status === "paid" || orderStatus?.status === "pay_on_site") {
+      await this.setSession(parentId, "idle", {});
+      await this.renderChildrenMenu(parentId, peerId);
+      return;
+    }
+
     const isYanino = typeof draft.paymentChoiceIsYanino === "boolean"
       ? draft.paymentChoiceIsYanino
       : (await this.getPaymentChoice(orderId)).isYanino;
@@ -1018,10 +1083,11 @@ export class VkBotService {
     }
 
     for (const booking of bookings) {
-      await this.messages.sendKeyboard(peerId, this.menu.renderTrialChild(booking), [
-        { label: "Изменить", payload: { action: "change_booking", bookingId: booking.id }, color: "primary" },
-        { label: "Отменить", payload: { action: "cancel_booking", bookingId: booking.id }, color: "negative" }
-      ]);
+      await this.messages.sendKeyboard(
+        peerId,
+        this.menu.renderTrialChild(booking),
+        this.messages.buildTrialMenuButtons(booking.id)
+      );
     }
   }
 

@@ -155,6 +155,14 @@ export class VkMessageService {
     return buttons;
   }
 
+  buildTrialMenuButtons(bookingId: string) {
+    return [
+      { label: "Перенести запись", payload: { action: "change_date", bookingId }, color: "primary" },
+      { label: "Когда моя запись", payload: { action: "booking_details", bookingId }, color: "secondary" },
+      { label: "Записать еще одного ребенка", payload: { action: "add_child" }, color: "positive" }
+    ] satisfies Button[];
+  }
+
   private buildKeyboard(buttons: Button[], inline = false) {
     const builder = Keyboard.builder();
     if (inline) builder.inline();
