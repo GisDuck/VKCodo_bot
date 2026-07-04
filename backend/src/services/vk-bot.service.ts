@@ -148,7 +148,7 @@ export class VkBotService {
 
       if (payload.action === "start_trial") {
         if (session.state !== "idle") {
-          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага");
           return;
         }
         stateAfter = await this.handleIdleState(parent.id, message.peer_id);
@@ -157,7 +157,7 @@ export class VkBotService {
 
       if (payload.action === "children") {
         if (session.state !== "idle") {
-          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага");
           return;
         }
         stateAfter = await this.handleIdleState(parent.id, message.peer_id);
@@ -166,7 +166,7 @@ export class VkBotService {
 
       if (payload.action === "edit_field" && typeof payload.field === "string") {
         if (!this.isEditFieldAllowed(session.state, payload.field)) {
-          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Продолжим с текущего шага.");
+          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Продолжим с текущего шага");
           return;
         }
         await this.handleEditField(parent.id, message.peer_id, draft, payload.field);
@@ -200,7 +200,7 @@ export class VkBotService {
 
       if (payload.action === "choose_change_booking") {
         if (session.state !== "idle") {
-          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага");
           return;
         }
         await this.askWhichBookingToReschedule(parent.id, message.peer_id);
@@ -214,7 +214,7 @@ export class VkBotService {
 
       if (payload.action === "change_booking_choice" && typeof payload.bookingId === "string") {
         if (session.state !== "change_booking_select") {
-          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Откройте меню и попробуйте еще раз.");
+          await this.messages.sendText(message.peer_id, "Эта кнопка уже устарела. Откройте меню и попробуйте еще раз");
           return;
         }
         await this.handleChangeBookingChoice(parent.id, message.peer_id, draft, payload.bookingId);
@@ -223,7 +223,7 @@ export class VkBotService {
 
       if (payload.action === "add_child") {
         if (session.state !== "idle") {
-          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага.");
+          await this.messages.sendText(message.peer_id, "Продолжим с текущего шага");
           return;
         }
         await this.startAdditionalChild(parent.id, message.peer_id);
@@ -267,7 +267,7 @@ export class VkBotService {
         stateBefore: session.state,
         error: this.errorMessage(error)
       });
-      await this.messages.sendText(message.peer_id, "Не получилось обработать сообщение. Я уже записал ошибку в лог.");
+      await this.messages.sendText(message.peer_id, "Не получилось обработать сообщение. Я уже записал ошибку в лог");
       throw error;
     } finally {
       const freshSession = await this.getSession(parent.id);
@@ -405,7 +405,7 @@ export class VkBotService {
     parentId: string,
     peerId: number,
     draft: SessionDraft,
-    message = "Запись еще одного ребенка отменена."
+    message = "Запись еще одного ребенка отменена"
   ) {
     await this.cleanupAdditionalChildDraft(parentId, draft);
     await this.setSession(parentId, "idle", {});
@@ -450,7 +450,7 @@ export class VkBotService {
   private async resendCourseOptions(peerId: number, draft: SessionDraft, ageOverride?: number) {
     const age = ageOverride ?? draft.currentChild?.age;
     if (!age) {
-      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага.");
+      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага");
       return;
     }
 
@@ -499,7 +499,7 @@ export class VkBotService {
 
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     if (!text) {
-      await this.messages.sendText(peerId, "Напишите, пожалуйста, имя родителя.");
+      await this.messages.sendText(peerId, "Напишите, пожалуйста, имя родителя");
       return;
     }
     draft.parentName = text;
@@ -520,7 +520,7 @@ export class VkBotService {
         return;
       case "phone":
         await this.setSession(parentId, "awaiting_phone", draft);
-        await this.messages.sendText(peerId, "Напишите новый номер телефона для записи.");
+        await this.messages.sendText(peerId, "Напишите новый номер телефона для записи");
         return;
       case "childrenCount":
         await this.setSession(parentId, "awaiting_children_count", draft);
@@ -551,14 +551,14 @@ export class VkBotService {
         return;
       }
       default:
-        await this.messages.sendText(peerId, "Не понял, что нужно изменить.");
+        await this.messages.sendText(peerId, "Не понял, что нужно изменить");
     }
   }
 
   private async handlePhone(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     const phoneDigits = text.replace(/\D/g, "");
     if (phoneDigits.length < 10 || phoneDigits.length > 12) {
-      await this.messages.sendText(peerId, "Похоже, в телефоне ошибка. Напишите номер еще раз, например +79991234567.");
+      await this.messages.sendText(peerId, "Похоже, в телефоне ошибка. Напишите номер еще раз, например +79991234567");
       return;
     }
     draft.phone = text;
@@ -574,7 +574,7 @@ export class VkBotService {
   private async handleChildrenCount(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     const count = Number.parseInt(text, 10);
     if (!Number.isInteger(count) || count < 1 || count > 5) {
-      await this.messages.sendText(peerId, "Напишите число детей от 1 до 5.");
+      await this.messages.sendText(peerId, "Напишите число детей от 1 до 5");
       return;
     }
     draft.childrenCount = count;
@@ -593,7 +593,7 @@ export class VkBotService {
 
   private async handleChildName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     if (!text) {
-      await this.messages.sendText(peerId, "Напишите имя ребенка.");
+      await this.messages.sendText(peerId, "Напишите имя ребенка");
       return;
     }
     draft.currentChild = { name: text };
@@ -608,7 +608,7 @@ export class VkBotService {
   private async handleChildAge(parentId: string, peerId: number, draft: SessionDraft, text: string) {
     const age = Number.parseInt(text, 10);
     if (!Number.isInteger(age) || age < 5 || age > 17) {
-      await this.messages.sendText(peerId, "Пока пробные занятия доступны для возраста от 5 до 17 лет.");
+      await this.messages.sendText(peerId, "Пока пробные занятия доступны для возраста от 5 до 17 лет");
       return;
     }
 
@@ -718,7 +718,7 @@ export class VkBotService {
     const branchId = draft.currentChild?.branchId;
     const courseCode = draft.currentChild?.courseCode;
     if (!branchId || !courseCode) {
-      await this.messages.sendText(peerId, "Не вижу филиал или курс. Давайте выберем заново.");
+      await this.messages.sendText(peerId, "Не вижу филиал или курс. Давайте выберем заново");
       await this.setSession(parentId, "awaiting_branch", draft);
       return;
     }
@@ -762,14 +762,14 @@ export class VkBotService {
 
     const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
     if (!lessonId) {
-      await this.resendLessonOptions(peerId, draft, "Выберите дату кнопкой с номером.");
+      await this.resendLessonOptions(peerId, draft, "Выберите дату кнопкой с номером");
       return;
     }
 
     const selected = draft.availableLessons?.find((lesson) => lesson.id === lessonId);
     const child = draft.currentChild;
     if (!selected || !child?.name || !child.age || !child.branchId || !child.courseCode) {
-      await this.messages.sendText(peerId, "Не хватает данных для записи. Начнем заново.");
+      await this.messages.sendText(peerId, "Не хватает данных для записи. Начнем заново");
       await this.setSession(parentId, "idle", {});
       return;
     }
@@ -845,13 +845,18 @@ export class VkBotService {
 
   private buildPaymentChoiceMessage(isYanino: boolean): string {
     if (isYanino) {
-      return "Выберите способ оплаты: В школе можно оплатить наличными, картой, СБП, QR. А онлайн мы принимаем карту, СБП, QR.";
+      return "Выберите способ оплаты: В школе можно оплатить наличными, картой, СБП, QR. А онлайн мы принимаем карту, СБП, QR";
     }
 
-    return "Выберите способ оплаты: В школе можно оплатить наличными. А онлайн мы принимаем карту, СБП, QR.";
+    return "Выберите способ оплаты: В школе можно оплатить наличными. А онлайн мы принимаем карту, СБП, QR";
   }
 
-  private async resendLessonOptions(peerId: number, draft: SessionDraft, message: string) {
+  private async resendLessonOptions(
+    peerId: number,
+    draft: SessionDraft,
+    message: string,
+    options: { withCancelReschedule?: boolean } = {}
+  ) {
     const lessons = draft.availableLessons ?? [];
     if (lessons.length === 0) {
       await this.sendNoLessonsMessage(peerId);
@@ -861,14 +866,17 @@ export class VkBotService {
     await this.messages.sendKeyboard(
       peerId,
       `${message}\n\n${this.formatLessonOptions(lessons)}`,
-      this.messages.buildLessonButtons(lessons, { withDraftChangeActions: true })
+      this.messages.buildLessonButtons(
+        lessons,
+        options.withCancelReschedule ? { withCancelReschedule: true } : { withDraftChangeActions: true }
+      )
     );
   }
 
   private async startDraftCourseChange(parentId: string, peerId: number, draft: SessionDraft) {
     const age = draft.currentChild?.age;
     if (!age) {
-      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага.");
+      await this.messages.sendText(peerId, "Не вижу возраст ребенка. Давайте продолжим с текущего шага");
       return;
     }
 
@@ -942,6 +950,10 @@ export class VkBotService {
 
   private async handleOnlinePayment(peerId: number, orderId: string) {
     try {
+      const paymentSummary = await this.renderPaymentSummaryForMenuPayment(orderId);
+      if (paymentSummary) {
+        await this.messages.sendText(peerId, paymentSummary);
+      }
       const payment = await this.runInteractiveExternalRequest(peerId, () => this.booking.initOnlinePayment(orderId));
       await this.messages.sendKeyboard(peerId, `Ссылка на оплату:\n${payment?.paymentUrl ?? ""}`, [
         { label: "В школе", payload: { action: "pay_on_site", orderId }, color: "secondary" }
@@ -958,13 +970,36 @@ export class VkBotService {
     }
   }
 
+  private async renderPaymentSummaryForMenuPayment(orderId: string): Promise<string | null> {
+    const order = await this.db.order.findUniqueOrThrow({
+      where: { id: orderId },
+      include: {
+        payment: true,
+        items: { include: { child: true, booking: { include: { botCourse: true } } } }
+      }
+    });
+
+    if (order.status !== "pay_on_site" && order.payment?.method !== "on_site") {
+      return null;
+    }
+
+    return this.menu.renderPaymentSummary({
+      items: order.items.map((item) => ({
+        childName: item.child.name,
+        courseTitle: item.booking.botCourse.title,
+        amountKopecks: item.amountKopecks
+      })),
+      totalKopecks: order.totalKopecks
+    });
+  }
+
   private async handlePayOnSite(parentId: string, peerId: number, orderId: string) {
     try {
       await this.booking.markPayOnSite(orderId);
       await this.setSession(parentId, "idle", {});
       await this.messages.sendText(
         peerId,
-        "Спасибо! Ваша запись принята. Мы ждём Вас на пробном занятии. Оплатить занятие можно будет в школе."
+        "Спасибо! Ваша запись принята. Мы ждём Вас на пробном занятии. Оплатить занятие можно будет в школе"
       );
       await this.renderChildrenMenu(parentId, peerId);
     } catch (error) {
@@ -975,7 +1010,7 @@ export class VkBotService {
   private async handleCancelBooking(peerId: number, bookingId: string) {
     try {
       await this.booking.cancelBooking(bookingId);
-      await this.messages.sendText(peerId, "Запись отменена.");
+      await this.messages.sendText(peerId, "Запись отменена");
     } catch (error) {
       await this.messages.sendText(peerId, `Не удалось отменить запись: ${this.errorMessage(error)}`);
     }
@@ -984,7 +1019,7 @@ export class VkBotService {
   private async handleBookingDetails(parentId: string, peerId: number) {
     const bookings = await this.getVisibleTrialBookings(parentId);
     if (bookings.length === 0) {
-      await this.messages.sendText(peerId, "Пока активных записей нет.");
+      await this.messages.sendText(peerId, "Пока активных записей нет");
       return;
     }
 
@@ -996,7 +1031,12 @@ export class VkBotService {
   private async askWhichBookingToReschedule(parentId: string, peerId: number) {
     const bookings = await this.getVisibleTrialBookings(parentId);
     if (bookings.length === 0) {
-      await this.messages.sendText(peerId, "Пока активных записей нет.");
+      await this.messages.sendText(peerId, "Пока активных записей нет");
+      return;
+    }
+
+    if (bookings.length === 1) {
+      await this.handleChangeDateStart(parentId, peerId, bookings[0].id);
       return;
     }
 
@@ -1040,7 +1080,7 @@ export class VkBotService {
 
   private async cancelReschedule(parentId: string, peerId: number) {
     await this.setSession(parentId, "idle", {});
-    await this.messages.sendText(peerId, "Перенос записи отменен.");
+    await this.messages.sendText(peerId, "Перенос записи отменен");
     await this.renderChildrenMenu(parentId, peerId);
   }
 
@@ -1051,7 +1091,7 @@ export class VkBotService {
     });
     const age = booking.child.age;
     if (!age) {
-      await this.messages.sendText(peerId, "Для смены курса не хватает возраста ребенка.");
+      await this.messages.sendText(peerId, "Для смены курса не хватает возраста ребенка");
       return;
     }
     await this.setSession(parentId, "change_course_select", { changeBookingId: bookingId });
@@ -1160,13 +1200,15 @@ export class VkBotService {
   ) {
     const lessonId = this.resolveLessonId(payload, text, draft.availableLessons);
     if (!lessonId) {
-      await this.resendLessonOptions(peerId, draft, "Выберите новую дату кнопкой с номером.");
+      await this.resendLessonOptions(peerId, draft, "Выберите новую дату кнопкой с номером", {
+        withCancelReschedule: true
+      });
       return;
     }
 
     const selected = draft.availableLessons?.find((lesson) => lesson.id === lessonId);
     if (!selected || !draft.changeBookingId) {
-      await this.messages.sendText(peerId, "Не удалось найти выбранную дату.");
+      await this.messages.sendText(peerId, "Не удалось найти выбранную дату");
       return;
     }
 
@@ -1209,6 +1251,7 @@ export class VkBotService {
     if (updatedBooking) {
       await this.messages.sendText(peerId, this.menu.renderTrialChild(updatedBooking));
     }
+    await this.renderChildrenMenu(parentId, peerId);
   }
 
   private buildRescheduleDoneMessage(payment: Payment | null): string {
@@ -1257,7 +1300,11 @@ export class VkBotService {
         await this.sendNoLessonsMessage(peerId);
         return;
       }
-      await this.messages.sendKeyboard(peerId, list.lessonsText, this.messages.buildLessonButtons(list.lessons));
+      await this.messages.sendKeyboard(
+        peerId,
+        list.lessonsText,
+        this.messages.buildLessonButtons(list.lessons, { withCancelReschedule: true })
+      );
     } catch (error) {
       await this.handleInteractiveExternalFailure(peerId, error, () => this.sendRetryLessonsMessage(peerId));
     }
@@ -1272,7 +1319,7 @@ export class VkBotService {
     const branchId = draft.currentChild?.branchId;
     const courseCode = draft.currentChild?.courseCode;
     if (state !== "awaiting_lesson" || !branchId || !courseCode) {
-      await this.messages.sendText(peerId, "Эта проверка уже устарела. Продолжим с текущего шага.");
+      await this.messages.sendText(peerId, "Эта проверка уже устарела. Продолжим с текущего шага");
       return;
     }
 
@@ -1302,7 +1349,7 @@ export class VkBotService {
     const orderId = draft.orderId;
     if (!orderId) {
       await this.setSession(parentId, "idle", {});
-      await this.messages.sendText(peerId, "Не удалось найти заказ. Откройте меню детей, чтобы проверить запись.");
+      await this.messages.sendText(peerId, "Не удалось найти заказ. Откройте меню детей, чтобы проверить запись");
       await this.renderChildrenMenu(parentId, peerId);
       return;
     }
@@ -1355,7 +1402,7 @@ export class VkBotService {
     const timer = setTimeout(() => {
       if (completed) return;
       void this.messages
-        .sendText(peerId, "Ждем ответ от сервера, это может занять немного времени.")
+        .sendText(peerId, "Ждем ответ от сервера, это может занять немного времени")
         .catch((error) => console.error("Failed to send slow MoyKlass notice", error));
     }, SLOW_MOYKLASS_NOTICE_MS);
 
@@ -1385,7 +1432,7 @@ export class VkBotService {
   private async sendRetryLessonsMessage(peerId: number) {
     await this.messages.sendKeyboard(
       peerId,
-      "Попробуйте проверить доступные даты еще раз.",
+      "Попробуйте проверить доступные даты еще раз",
       this.messages.buildRetryLessonsButtons()
     );
   }
@@ -1393,7 +1440,7 @@ export class VkBotService {
   private async sendNoLessonsMessage(peerId: number) {
     await this.messages.sendKeyboard(
       peerId,
-      "Сейчас нет доступных дат для занятий. Попробуйте позже или нажмите кнопку, чтобы проверить еще раз.",
+      "Сейчас нет доступных дат для занятий. Попробуйте позже или нажмите кнопку, чтобы проверить еще раз",
       this.messages.buildRetryLessonsButtons()
     );
   }

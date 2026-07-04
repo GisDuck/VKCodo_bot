@@ -166,7 +166,10 @@ export class VkMessageService {
     ];
   }
 
-  buildLessonButtons(lessons: Array<{ id: number; classId: number }>, options: { withDraftChangeActions?: boolean } = {}) {
+  buildLessonButtons(
+    lessons: Array<{ id: number; classId: number }>,
+    options: { withDraftChangeActions?: boolean; withCancelReschedule?: boolean } = {}
+  ) {
     const buttons: Button[] = lessons.map((lesson, index) => ({
       label: String(index + 1),
       payload: { action: "lesson", lessonId: lesson.id, classId: lesson.classId },
@@ -178,6 +181,14 @@ export class VkMessageService {
         { label: "др. филиал", payload: { action: "lesson_change_branch" }, color: "secondary" },
         { label: "др. курс", payload: { action: "lesson_change_course" }, color: "secondary" }
       );
+    }
+
+    if (options.withCancelReschedule) {
+      buttons.push({
+        label: "Отмена",
+        payload: { action: "cancel_reschedule" },
+        color: "negative"
+      });
     }
 
     return buttons;
@@ -285,23 +296,22 @@ export class VkMessageService {
 
   private async sendQueued(peerId: number, message: string, keyboard?: ReturnType<VkMessageService["buildKeyboard"]>) {
     await this.waitForMessageGap(peerId);
-    const normalizedMessage = normalizeOutgoingMessage(message);
 
     await this.log.write("vk_send", {
       peerId,
-      message: normalizedMessage,
+      message,
       hasKeyboard: Boolean(keyboard)
     });
 
     if (!env.VK_GROUP_TOKEN) {
-      console.log("[vk:dry-run]", { peerId, message: normalizedMessage, keyboard: keyboard?.toString() });
+      console.log("[vk:dry-run]", { peerId, message, keyboard: keyboard?.toString() });
       return;
     }
 
     await this.vk.api.messages.send({
       peer_id: peerId,
       random_id: Date.now() + Math.floor(Math.random() * 1000),
-      message: normalizedMessage,
+      message,
       keyboard
     });
 
@@ -319,12 +329,6 @@ export class VkMessageService {
 
 export function labelToPrimaryCourseOption(label: string) {
   return Object.entries(COURSE_OPTION_LABELS).find(([, value]) => value === label)?.[0];
-}
-
-function normalizeOutgoingMessage(message: string): string {
-  return message
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\.+\s*$/u, "");
 }
 
 function sleep(ms: number): Promise<void> {

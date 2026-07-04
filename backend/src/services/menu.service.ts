@@ -63,6 +63,18 @@ export class MenuService {
     return [`Проверьте запись:`, ...lines, `Итого: ${kopecksToRubles(input.totalKopecks)}`].join("\n");
   }
 
+  renderPaymentSummary(input: {
+    items: Array<{ childName: string; courseTitle: string; amountKopecks: number }>;
+    totalKopecks: number;
+  }): string {
+    const lines = input.items.map(
+      (item, index) =>
+        `${index + 1}. ${item.childName}, ${item.courseTitle}: ${kopecksToRubles(item.amountKopecks)}`
+    );
+
+    return [...lines, `Итого: ${kopecksToRubles(input.totalKopecks)}`].join("\n");
+  }
+
 }
 
 function stripProtocol(url: string): string {

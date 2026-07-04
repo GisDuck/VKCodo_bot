@@ -42,16 +42,11 @@ export class TrialReminderService {
     });
 
     let sent = 0;
+    const menuBookingsByVkUserId = new Map<number, typeof bookings>();
     for (const booking of bookings) {
-      await this.messages.sendText(
-        Number(booking.child.parent.vkUserId),
-        `Напоминаем о пробном занятии завтра\n\n${this.menu.renderTrialChild(booking)}`
-      );
-      await this.messages.sendKeyboard(
-        Number(booking.child.parent.vkUserId),
-        "Меню",
-        this.messages.buildTrialRootMenuButtons(this.getTrialRootMenuOptions([booking]))
-      );
+      const vkUserId = Number(booking.child.parent.vkUserId);
+      await this.messages.sendText(vkUserId, `Напоминаем о пробном занятии завтра\n\n${this.menu.renderTrialChild(booking)}`);
+      menuBookingsByVkUserId.set(vkUserId, [...(menuBookingsByVkUserId.get(vkUserId) ?? []), booking]);
 
       await this.db.trialReminderLog.create({
         data: {
@@ -61,6 +56,14 @@ export class TrialReminderService {
         }
       });
       sent += 1;
+    }
+
+    for (const [vkUserId, reminderBookings] of menuBookingsByVkUserId) {
+      await this.messages.sendKeyboard(
+        vkUserId,
+        "Меню",
+        this.messages.buildTrialRootMenuButtons(this.getTrialRootMenuOptions(reminderBookings))
+      );
     }
 
     return {
