@@ -95,6 +95,10 @@ services:
       PAYMENT_EXPIRES_MINUTES: ${PAYMENT_EXPIRES_MINUTES:-30}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change-me}
+      ADMIN_CSRF_SECRET: ${ADMIN_CSRF_SECRET:-}
+      JOB_SECRET: ${JOB_SECRET:-}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-14}
+      WORKER_ID: ${WORKER_ID:-codorobot-backend}
       LOG_DIR: /app/logs
     volumes:
       - ./logs:/app/logs

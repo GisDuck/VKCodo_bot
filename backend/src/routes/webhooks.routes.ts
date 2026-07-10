@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma.js";
 import { BookingService } from "../services/booking.service.js";
 import { TBankService } from "../services/tbank.service.js";
 import { VkEventLogService } from "../services/vk-event-log.service.js";
+import { VkInboundEventService } from "../services/vk-inbound-event.service.js";
 import { VkBotService } from "../services/vk-bot.service.js";
 import { VkMessageService } from "../services/vk-message.service.js";
 
@@ -13,6 +14,7 @@ export async function webhooksRoutes(app: FastifyInstance) {
   const booking = new BookingService();
   const vkLog = new VkEventLogService();
   const vkMessages = new VkMessageService();
+  const vkInbox = new VkInboundEventService(prisma, vkBot);
 
   app.post("/webhooks/vk", async (request, reply) => {
     const body = request.body as Record<string, unknown>;
@@ -36,8 +38,9 @@ export async function webhooksRoutes(app: FastifyInstance) {
       message: summarizeVkMessage(body)
     });
 
-    void vkBot.handleUpdate(body).catch((error) => {
-      request.log.error({ error }, "VK background handling failed");
+    const event = await vkInbox.enqueue(body);
+    void vkInbox.processEvent(event.id).catch((error) => {
+      request.log.error({ error, eventId: event.id }, "VK background handling failed");
     });
 
     return reply.type("text/plain").send("ok");
@@ -58,16 +61,16 @@ export async function webhooksRoutes(app: FastifyInstance) {
     if (!payment) return reply.code(404).send({ error: "payment not found" });
 
     if (tbank.isPaidStatus(body.Status)) {
-      const wasAlreadyPaid = payment.status === "paid";
-      const order = await booking.handlePaidOrder(payment.orderId);
-      if (!wasAlreadyPaid) {
+      const { order, shouldNotify } = await booking.handlePaidOrder(payment.orderId);
+      if (shouldNotify) {
         await vkMessages.sendText(
           Number(order.parent.vkUserId),
           "Спасибо! Оплата получена. Ваша запись принята, мы ждём Вас на пробном занятии."
         );
         await vkBot.showTrialMenuForParent(order.parentId, Number(order.parent.vkUserId));
+        await booking.markPaidNotificationSent(payment.orderId);
       }
-    } else {
+    } else if (payment.status !== "paid") {
       await prisma.payment.update({
         where: { orderId: payment.orderId },
         data: { status: "failed" }
@@ -89,8 +92,8 @@ function summarizeVkMessage(body: Record<string, unknown>) {
     fromId: message.from_id,
     peerId: message.peer_id,
     date: message.date,
-    text: message.text,
-    payload: message.payload,
-    ref: message.ref
+    textLength: typeof message.text === "string" ? message.text.length : 0,
+    hasPayload: Boolean(message.payload),
+    hasRef: Boolean(message.ref)
   };
 }

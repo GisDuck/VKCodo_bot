@@ -1,7 +1,10 @@
 import { ChildStatus, Prisma } from "@prisma/client";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { env } from "../config/env.js";
 import { BRANCHES, COURSE_CATALOG, DEFAULT_MANAGER_ID } from "../domain/catalog.js";
+import { assertPersonName } from "../lib/person-name.js";
 import { prisma } from "../lib/prisma.js";
 import { MoyKlassService } from "../services/moyklass.service.js";
 import { TrialReminderService } from "../services/trial-reminder.service.js";
@@ -13,12 +16,36 @@ const childStatusLabels: Record<ChildStatus, string> = {
   archived: "Архив"
 };
 
+const csrfToken = createHmac("sha256", env.ADMIN_CSRF_SECRET || "development-csrf-secret")
+  .update(`${env.ADMIN_USERNAME}:codorobot-admin`)
+  .digest("hex");
+
+const settingsFormSchema = z.object({
+  managerId: z.coerce.number().int().positive(),
+  trialPriceRubles: z.coerce.number().int().positive(),
+  referralTrialPriceRubles: z.coerce.number().int().positive(),
+  paymentTestMode: z.enum(["true", "false"]),
+  developerMode: z.enum(["true", "false"]),
+  developerTodayDate: z.string().optional()
+});
+
+const branchFormSchema = z.object({
+  name: z.string().trim().min(1),
+  address: z.string().trim().min(1),
+  mapUrl: z.string().trim().optional(),
+  moyklassId: z.coerce.number().int().positive(),
+  baseUrl: z.string().trim().min(1)
+});
+
 export async function adminRoutes(app: FastifyInstance) {
   app.addHook("preHandler", async (request, reply) => {
     if (!request.url.startsWith("/admin")) return;
     if (!isAuthorized(request)) {
       reply.header("WWW-Authenticate", 'Basic realm="Codorobot admin"');
       return reply.code(401).send("Auth required");
+    }
+    if (request.method === "POST" && !isValidCsrfRequest(request)) {
+      return reply.code(403).send("Invalid CSRF token");
     }
   });
 
@@ -141,11 +168,13 @@ export async function adminRoutes(app: FastifyInstance) {
             <p>VK ID: ${client.vkUserId.toString()} · создан ${formatDateTime(client.createdAt)}</p>
           </div>
           <form method="post" action="/admin/clients/${client.id}/delete" onsubmit="return confirm('Удалить клиента полностью из локальной базы бота?');">
+            ${csrfInput()}
             <button class="danger" type="submit">Удалить клиента</button>
           </form>
         </div>
 
         <form method="post" action="/admin/clients/${client.id}">
+          ${csrfInput()}
           <fieldset>
             <legend>Родитель</legend>
             <label>Имя родителя <input name="parent:name" value="${escapeHtml(client.name ?? "")}" /></label>
@@ -183,32 +212,38 @@ export async function adminRoutes(app: FastifyInstance) {
 
     if (!client) return reply.code(404).send("Client not found");
 
-    await prisma.parent.update({
-      where: { id: client.id },
-      data: {
-        name: emptyToNull(getSingle(body["parent:name"])),
-        phone: emptyToNull(getSingle(body["parent:phone"])),
-        referralPayload: emptyToNull(getSingle(body["parent:referralPayload"])),
-        referralApplied: getSingle(body["parent:referralApplied"]) === "on"
-      }
-    });
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.parent.update({
+          where: { id: client.id },
+          data: {
+            name: validateOptionalPersonName(getSingle(body["parent:name"]), "Имя родителя"),
+            phone: emptyToNull(getSingle(body["parent:phone"])),
+            referralPayload: emptyToNull(getSingle(body["parent:referralPayload"])),
+            referralApplied: getSingle(body["parent:referralApplied"]) === "on"
+          }
+        });
 
-    for (const child of client.children) {
-      const name = getSingle(body[`child:${child.id}:name`]).trim();
-      const ageRaw = getSingle(body[`child:${child.id}:age`]).trim();
-      const moyklassRaw = getSingle(body[`child:${child.id}:moyklassUserId`]).trim();
-      const statusRaw = getSingle(body[`child:${child.id}:status`]);
-      const status = childStatuses.includes(statusRaw as ChildStatus) ? (statusRaw as ChildStatus) : child.status;
+        for (const child of client.children) {
+          const name = getSingle(body[`child:${child.id}:name`]).trim();
+          const ageRaw = getSingle(body[`child:${child.id}:age`]).trim();
+          const moyklassRaw = getSingle(body[`child:${child.id}:moyklassUserId`]).trim();
+          const statusRaw = getSingle(body[`child:${child.id}:status`]);
+          const status = childStatuses.includes(statusRaw as ChildStatus) ? (statusRaw as ChildStatus) : child.status;
 
-      await prisma.child.update({
-        where: { id: child.id },
-        data: {
-          name: name || child.name,
-          age: parseOptionalInt(ageRaw),
-          moyklassUserId: parseOptionalInt(moyklassRaw),
-          status
+          await tx.child.update({
+            where: { id: child.id },
+            data: {
+              name: name ? assertPersonName(name, "Имя ребенка") : child.name,
+              age: parseOptionalIntStrict(ageRaw, `child ${child.id} age`),
+              moyklassUserId: parseOptionalIntStrict(moyklassRaw, `child ${child.id} MoyKlass user id`),
+              status
+            }
+          });
         }
       });
+    } catch (error) {
+      return sendAdminValidationError(reply, error);
     }
 
     return reply.redirect(`/admin/clients/${client.id}`);
@@ -260,10 +295,12 @@ export async function adminRoutes(app: FastifyInstance) {
             <p>Эти ID можно менять каждый учебный год без правки кода.</p>
           </div>
           <form method="post" action="/admin/moyklass/sync-courses">
+            ${csrfInput()}
             <button type="submit">Загрузить курсы из МойКласс</button>
           </form>
         </div>
         <form method="post" action="/admin/courses">
+          ${csrfInput()}
           ${mappings
             .map(
               (mapping) => `
@@ -283,11 +320,14 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/admin/courses", async (request, reply) => {
     const body = request.body as Record<string, string>;
-    for (const [id, value] of Object.entries(body)) {
-      const moyklassCourseId = Number.parseInt(value, 10);
-      if (Number.isInteger(moyklassCourseId)) {
+    try {
+      for (const [id, value] of Object.entries(body)) {
+        if (id === "_csrf") continue;
+        const moyklassCourseId = parsePositiveIntStrict(value, `course mapping ${id}`);
         await prisma.courseMapping.update({ where: { id }, data: { moyklassCourseId } });
       }
+    } catch (error) {
+      return sendAdminValidationError(reply, error);
     }
     return reply.redirect("/admin/courses");
   });
@@ -302,6 +342,7 @@ export async function adminRoutes(app: FastifyInstance) {
       <section class="panel">
         <h2>Филиалы</h2>
         <form method="post" action="/admin/branches">
+          ${csrfInput()}
           ${branches
             .map(
               (branch) => `
@@ -326,19 +367,30 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/admin/branches", async (request, reply) => {
     const body = request.body as Record<string, string>;
-    const ids = new Set(Object.keys(body).map((key) => key.split(":")[0]));
-    for (const id of ids) {
-      if (!body[`${id}:id`]) continue;
-      await prisma.branch.update({
-        where: { id },
-        data: {
+    try {
+      const ids = new Set(Object.keys(body).filter((key) => key !== "_csrf").map((key) => key.split(":")[0]));
+      for (const id of ids) {
+        if (!body[`${id}:id`]) continue;
+        const parsed = branchFormSchema.parse({
           name: body[`${id}:name`],
           address: body[`${id}:address`],
-          mapUrl: emptyToNull(body[`${id}:mapUrl`] ?? ""),
-          moyklassId: Number.parseInt(body[`${id}:moyklassId`], 10),
+          mapUrl: body[`${id}:mapUrl`] ?? "",
+          moyklassId: body[`${id}:moyklassId`],
           baseUrl: body[`${id}:baseUrl`]
-        }
-      });
+        });
+        await prisma.branch.update({
+          where: { id },
+          data: {
+            name: parsed.name,
+            address: parsed.address,
+            mapUrl: emptyToNull(parsed.mapUrl ?? ""),
+            moyklassId: parsed.moyklassId,
+            baseUrl: parsed.baseUrl
+          }
+        });
+      }
+    } catch (error) {
+      return sendAdminValidationError(reply, error);
     }
     return reply.redirect("/admin/branches");
   });
@@ -359,6 +411,7 @@ export async function adminRoutes(app: FastifyInstance) {
       <section class="panel">
         <h2>Настройки бота</h2>
         <form method="post" action="/admin/settings">
+          ${csrfInput()}
           <label>Manager ID <input name="managerId" value="${manager}" /></label>
           <label>Цена пробного, ₽ <input name="trialPriceRubles" value="${price}" /></label>
           <label>Реферальная цена, ₽ <input name="referralTrialPriceRubles" value="${referralPrice}" /></label>
@@ -375,6 +428,7 @@ export async function adminRoutes(app: FastifyInstance) {
           <button type="submit">Сохранить</button>
         </form>
         <form method="post" action="/admin/reminders/send-trial" style="margin-top:16px">
+          ${csrfInput()}
           <button type="submit">Отправить напоминания на завтра</button>
         </form>
       </section>
@@ -384,12 +438,24 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.post("/admin/settings", async (request, reply) => {
     const body = request.body as Record<string, string>;
-    await setSetting("managerId", Number.parseInt(body.managerId ?? String(DEFAULT_MANAGER_ID), 10));
-    await setSetting("trialPriceRubles", Number.parseInt(body.trialPriceRubles ?? "600", 10));
-    await setSetting("referralTrialPriceRubles", Number.parseInt(body.referralTrialPriceRubles ?? "300", 10));
-    await setSetting("paymentTestMode", body.paymentTestMode === "true");
-    await setSetting("developerMode", body.developerMode === "true");
-    await setSetting("developerTodayDate", validDateInput(body.developerTodayDate) ? body.developerTodayDate : todayInputValue());
+    try {
+      const parsed = settingsFormSchema.parse(body);
+      if (env.NODE_ENV === "production" && parsed.developerMode === "true") {
+        throw new Error("developerMode cannot be enabled in production");
+      }
+
+      await setSetting("managerId", parsed.managerId);
+      await setSetting("trialPriceRubles", parsed.trialPriceRubles);
+      await setSetting("referralTrialPriceRubles", parsed.referralTrialPriceRubles);
+      await setSetting("paymentTestMode", parsed.paymentTestMode === "true");
+      await setSetting("developerMode", parsed.developerMode === "true");
+      await setSetting(
+        "developerTodayDate",
+        validDateInput(parsed.developerTodayDate) ? parsed.developerTodayDate : todayInputValue()
+      );
+    } catch (error) {
+      return sendAdminValidationError(reply, error);
+    }
     return reply.redirect("/admin/settings");
   });
 
@@ -636,6 +702,31 @@ function isAuthorized(request: FastifyRequest): boolean {
   return username === env.ADMIN_USERNAME && password === env.ADMIN_PASSWORD;
 }
 
+function isValidCsrfRequest(request: FastifyRequest): boolean {
+  const body = request.body as Record<string, string | string[] | undefined> | undefined;
+  const token = getSingle(body?._csrf);
+  if (!token) return false;
+
+  const expected = Buffer.from(csrfToken);
+  const actual = Buffer.from(token);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function csrfInput(): string {
+  return `<input type="hidden" name="_csrf" value="${csrfToken}" />`;
+}
+
+function sendAdminValidationError(reply: FastifyReply, error: unknown) {
+  const message =
+    error instanceof z.ZodError
+      ? error.issues.map((issue) => `${issue.path.join(".") || "field"}: ${issue.message}`).join("; ")
+      : error instanceof Error
+        ? error.message
+        : "Invalid admin form";
+
+  return reply.code(400).type("text/plain; charset=utf-8").send(`Invalid admin form: ${message}`);
+}
+
 function html(reply: FastifyReply, title: string, body: string) {
   return reply.type("text/html; charset=utf-8").send(`
     <!doctype html>
@@ -704,10 +795,21 @@ function emptyToNull(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
-function parseOptionalInt(value: string): number | null {
+function validateOptionalPersonName(value: string, fieldLabel: string): string | null {
+  const trimmed = value.trim();
+  return trimmed ? assertPersonName(trimmed, fieldLabel) : null;
+}
+
+function parseOptionalIntStrict(value: string, fieldName: string): number | null {
   if (!value) return null;
+  return parsePositiveIntStrict(value, fieldName);
+}
+
+function parsePositiveIntStrict(value: string, fieldName: string): number {
+  if (!/^\d+$/.test(value.trim())) throw new Error(`${fieldName} must be a positive integer`);
   const parsed = Number.parseInt(value, 10);
-  return Number.isInteger(parsed) ? parsed : null;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${fieldName} must be a positive integer`);
+  return parsed;
 }
 
 function formatDate(value: Date): string {

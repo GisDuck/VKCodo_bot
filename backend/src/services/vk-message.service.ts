@@ -297,7 +297,7 @@ export class VkMessageService {
 
     await this.log.write("vk_send", {
       peerId,
-      message,
+      messageLength: message.length,
       hasKeyboard: Boolean(keyboard)
     });
 

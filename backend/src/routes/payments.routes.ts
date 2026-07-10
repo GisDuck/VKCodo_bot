@@ -1,9 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { BookingService } from "../services/booking.service.js";
-
 export async function paymentsRoutes(app: FastifyInstance) {
-  const booking = new BookingService();
-
   app.get("/payment/success", async (_request, reply) => {
     return reply.type("text/html; charset=utf-8").send(paymentPage({
       title: "Оплата прошла",
@@ -26,10 +22,6 @@ export async function paymentsRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.post("/api/payments/:orderId/init", async (request) => {
-    const { orderId } = request.params as { orderId: string };
-    return booking.initOnlinePayment(orderId);
-  });
 }
 
 function paymentPage(input: {

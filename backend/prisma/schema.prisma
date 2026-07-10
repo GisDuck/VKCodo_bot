@@ -184,6 +184,7 @@ model Payment {
   tbankPaymentId    String?
   tbankOrderId      String?
   paymentUrl        String?
+  paidNotificationSentAt DateTime?
   createdAt         DateTime     @default(now())
   updatedAt         DateTime     @updatedAt
   order             Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -197,6 +198,8 @@ model MoyKlassSyncJob {
   source      String
   lastError   String?
   nextRunAt   DateTime?
+  lockedAt    DateTime?
+  lockedBy    String?
   completedAt DateTime?
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
@@ -206,6 +209,7 @@ model MoyKlassSyncJob {
 
   @@unique([bookingId])
   @@index([status, nextRunAt])
+  @@index([status, lockedAt])
   @@index([orderId])
 }
 
@@ -252,4 +256,23 @@ model TrialReminderLog {
 
   @@unique([bookingId, type, targetDate])
   @@index([sentAt])
+}
+
+model VkInboundEvent {
+  id          String   @id @default(cuid())
+  eventKey    String   @unique
+  vkEventId   String?
+  type        String
+  status      String   @default("received")
+  payload     Json
+  attempts    Int      @default(0)
+  lastError   String?
+  nextRunAt   DateTime?
+  receivedAt  DateTime @default(now())
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([receivedAt])
 }

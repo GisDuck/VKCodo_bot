@@ -10,8 +10,9 @@ import { env } from "../config/env.js";
 import { TRIAL_LOOKUP_DAYS } from "../domain/catalog.js";
 import { addDays } from "../lib/dates.js";
 import { resolveTodayForDeveloperMode } from "../lib/developer-date.js";
+import { assertPersonName } from "../lib/person-name.js";
 import { prisma } from "../lib/prisma.js";
-import { LessonFormatService } from "./lesson-format.service.js";
+import { LessonFormatService, type LessonListResult } from "./lesson-format.service.js";
 import { MoyKlassService } from "./moyklass.service.js";
 import { MoyKlassSyncQueueService } from "./moyklass-sync-queue.service.js";
 import { PricingService } from "./pricing.service.js";
@@ -33,6 +34,10 @@ export type BookingDraftInput = {
   lesson: SelectedLesson;
 };
 
+export type AvailableLessonsResult = LessonListResult & {
+  hasCourseInBranch: boolean;
+};
+
 export class BookingService {
   private readonly lessonFormatter = new LessonFormatService();
   private readonly pricing = new PricingService();
@@ -52,17 +57,18 @@ export class BookingService {
     phone?: string | null;
     referralPayload?: string | null;
   }) {
+    const parentName = input.name ? assertPersonName(input.name, "Имя родителя") : input.name;
     return this.db.parent.upsert({
       where: { vkUserId: BigInt(input.vkUserId) },
       update: {
-        name: input.name ?? undefined,
+        name: parentName ?? undefined,
         phone: input.phone ?? undefined,
         referralPayload: input.referralPayload ?? undefined,
         referralApplied: input.referralPayload ? true : undefined
       },
       create: {
         vkUserId: BigInt(input.vkUserId),
-        name: input.name,
+        name: parentName,
         phone: input.phone,
         referralPayload: input.referralPayload,
         referralApplied: Boolean(input.referralPayload)
@@ -70,7 +76,7 @@ export class BookingService {
     });
   }
 
-  async getAvailableLessons(branchId: string, courseCode: BotCourseCode) {
+  async getAvailableLessons(branchId: string, courseCode: BotCourseCode): Promise<AvailableLessonsResult> {
     const branch = await this.db.branch.findUniqueOrThrow({ where: { id: branchId } });
     const course = await this.db.botCourse.findUniqueOrThrow({
       where: { code: courseCode },
@@ -80,6 +86,15 @@ export class BookingService {
     if (!courseId) throw new Error(`Course mapping for ${courseCode} is not configured`);
 
     const classes = await this.moyKlass.getClasses(branch.moyklassId, courseId);
+    if (classes.length === 0) {
+      return {
+        lessons: [],
+        lessonsText: "",
+        maxLessonNumber: null,
+        hasCourseInBranch: false
+      };
+    }
+
     const lookupSettings = await this.getLessonLookupSettings();
     const lessons = await this.moyKlass.getLessons({
       dateFrom: lookupSettings.startDate,
@@ -87,9 +102,12 @@ export class BookingService {
       classIds: classes.map((item) => item.id)
     });
 
-    return this.lessonFormatter.buildAvailableLessonList(lessons, {
-      includeUnavailable: lookupSettings.developerMode
-    });
+    return {
+      ...this.lessonFormatter.buildAvailableLessonList(lessons, {
+        includeUnavailable: lookupSettings.developerMode
+      }),
+      hasCourseInBranch: true
+    };
   }
 
   private async getLessonLookupSettings(): Promise<{ startDate: Date; developerMode: boolean }> {
@@ -100,8 +118,8 @@ export class BookingService {
     const enabled = developerMode?.value === true;
 
     return {
-      startDate: resolveTodayForDeveloperMode(enabled, developerTodayDate?.value),
-      developerMode: enabled
+      startDate: resolveTodayForDeveloperMode(env.NODE_ENV === "production" ? false : enabled, developerTodayDate?.value),
+      developerMode: env.NODE_ENV === "production" ? false : enabled
     };
   }
 
@@ -111,11 +129,12 @@ export class BookingService {
   }
 
   async createDraftBooking(input: BookingDraftInput) {
+    const childName = assertPersonName(input.childName, "Имя ребенка");
     const parent = await this.db.parent.findUniqueOrThrow({ where: { id: input.parentId } });
     const child = await this.db.child.create({
       data: {
         parentId: parent.id,
-        name: input.childName,
+        name: childName,
         age: input.childAge,
         status: "trial"
       }
@@ -187,6 +206,7 @@ export class BookingService {
     });
 
     if (order.status === OrderStatus.paid) return order.payment;
+    if (order.payment?.status === PaymentStatus.pending && order.payment.paymentUrl) return order.payment;
 
     const paymentTestMode = await this.getPaymentTestMode();
     const chargedKopecks = paymentTestMode ? 100 : order.totalKopecks;
@@ -255,7 +275,7 @@ export class BookingService {
         data: { status: BookingStatus.pay_on_site }
       });
 
-      return tx.payment.upsert({
+      const savedPayment = await tx.payment.upsert({
         where: { orderId },
         update: {
           method: PaymentMethod.on_site,
@@ -271,9 +291,11 @@ export class BookingService {
           chargedKopecks: 0
         }
       });
+
+      await this.moyKlassQueue.enqueueOrder(orderId, "pay_on_site", tx);
+      return savedPayment;
     });
 
-    await this.moyKlassQueue.enqueueOrder(orderId, "pay_on_site");
     void this.moyKlassQueue.processOrder(orderId).catch((error) => {
       console.error("Failed to process MoyKlass pay-on-site queue", error);
     });
@@ -292,13 +314,19 @@ export class BookingService {
     });
 
     for (const order of orders) {
-      await this.db.order.update({
-        where: { id: order.id },
-        data: { status: OrderStatus.expired_to_pay_on_site }
-      });
-      await this.db.trialBooking.updateMany({
-        where: { orderItem: { orderId: order.id } },
-        data: { status: BookingStatus.pay_on_site }
+      await this.db.$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: OrderStatus.expired_to_pay_on_site }
+        });
+        await tx.payment.updateMany({
+          where: { orderId: order.id, status: PaymentStatus.pending },
+          data: { status: PaymentStatus.expired }
+        });
+        await tx.trialBooking.updateMany({
+          where: { orderItem: { orderId: order.id } },
+          data: { status: BookingStatus.pay_on_site }
+        });
       });
     }
 
@@ -306,28 +334,42 @@ export class BookingService {
   }
 
   async handlePaidOrder(orderId: string) {
-    await this.db.trialBooking.updateMany({
-      where: { orderItem: { orderId } },
-      data: { status: BookingStatus.booked }
+    const result = await this.db.$transaction(async (tx) => {
+      const currentPayment = await tx.payment.findUniqueOrThrow({ where: { orderId } });
+      const shouldNotify = !currentPayment.paidNotificationSentAt;
+
+      await tx.trialBooking.updateMany({
+        where: { orderItem: { orderId } },
+        data: { status: BookingStatus.booked }
+      });
+
+      await tx.payment.update({
+        where: { orderId },
+        data: { status: PaymentStatus.paid }
+      });
+
+      const order = await tx.order.update({
+        where: { id: orderId },
+        data: { status: OrderStatus.paid },
+        include: { parent: true }
+      });
+
+      await this.moyKlassQueue.enqueueOrder(orderId, "online_paid", tx);
+      return { order, shouldNotify };
     });
 
-    await this.db.payment.update({
-      where: { orderId },
-      data: { status: PaymentStatus.paid }
-    });
-
-    const order = await this.db.order.update({
-      where: { id: orderId },
-      data: { status: OrderStatus.paid },
-      include: { parent: true }
-    });
-
-    await this.moyKlassQueue.enqueueOrder(orderId, "online_paid");
     void this.moyKlassQueue.processOrder(orderId).catch((error) => {
       console.error("Failed to process MoyKlass paid queue", error);
     });
 
-    return order;
+    return result;
+  }
+
+  async markPaidNotificationSent(orderId: string) {
+    await this.db.payment.updateMany({
+      where: { orderId, paidNotificationSentAt: null },
+      data: { paidNotificationSentAt: new Date() }
+    });
   }
 
   async cancelBooking(bookingId: string) {

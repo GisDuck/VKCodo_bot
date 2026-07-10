@@ -1,13 +1,16 @@
-import { BookingStatus, PaymentMethod, PaymentStatus, PrismaClient } from "@prisma/client";
+import { BookingStatus, PaymentMethod, PaymentStatus, Prisma, PrismaClient } from "@prisma/client";
+import { env } from "../config/env.js";
 import { errorMessage, withExternalApiRetry } from "../lib/external-retry.js";
 import { prisma } from "../lib/prisma.js";
 import { MoyKlassService } from "./moyklass.service.js";
 
 type SyncSource = "online_paid" | "pay_on_site";
 type StepName = "create_child_user" | "create_join" | "create_lesson_record" | "create_payment";
+type DbClient = PrismaClient | Prisma.TransactionClient;
 
 const STEPS: StepName[] = ["create_child_user", "create_join", "create_lesson_record", "create_payment"];
 const RETRY_DELAY_MS = 5 * 60_000;
+const LOCK_TIMEOUT_MS = 15 * 60_000;
 
 export class MoyKlassSyncQueueService {
   constructor(
@@ -15,14 +18,14 @@ export class MoyKlassSyncQueueService {
     private readonly moyKlass = new MoyKlassService()
   ) {}
 
-  async enqueueOrder(orderId: string, source: SyncSource) {
-    const order = await this.db.order.findUniqueOrThrow({
+  async enqueueOrder(orderId: string, source: SyncSource, db: DbClient = this.db) {
+    const order = await db.order.findUniqueOrThrow({
       where: { id: orderId },
       include: { items: { include: { booking: true } } }
     });
 
     for (const item of order.items) {
-      const job = await this.db.moyKlassSyncJob.upsert({
+      const job = await db.moyKlassSyncJob.upsert({
         where: { bookingId: item.bookingId },
         update: {
           orderId: order.id,
@@ -30,6 +33,8 @@ export class MoyKlassSyncQueueService {
           status: "pending",
           lastError: null,
           nextRunAt: null,
+          lockedAt: null,
+          lockedBy: null,
           completedAt: null
         },
         create: {
@@ -41,12 +46,12 @@ export class MoyKlassSyncQueueService {
 
       for (const step of STEPS) {
         const shouldSkipPayment = source === "pay_on_site" && step === "create_payment";
-        const savedStep = await this.db.moyKlassSyncStep.findUnique({
+        const savedStep = await db.moyKlassSyncStep.findUnique({
           where: { jobId_step: { jobId: job.id, step } }
         });
 
         if (!savedStep) {
-          await this.db.moyKlassSyncStep.create({
+          await db.moyKlassSyncStep.create({
             data: {
               jobId: job.id,
               step,
@@ -61,7 +66,7 @@ export class MoyKlassSyncQueueService {
         const nextStatus =
           shouldSkipPayment ? "not_required" : step === "create_payment" && savedStep.status === "not_required" ? "pending" : savedStep.status;
 
-        await this.db.moyKlassSyncStep.update({
+        await db.moyKlassSyncStep.update({
           where: { id: savedStep.id },
           data: {
             status: nextStatus,
@@ -74,38 +79,72 @@ export class MoyKlassSyncQueueService {
 
   async processOrder(orderId: string) {
     const jobs = await this.db.moyKlassSyncJob.findMany({
-      where: { orderId },
+      where: { orderId, status: { not: "done" } },
       orderBy: { createdAt: "asc" }
     });
 
     for (const job of jobs) {
-      await this.processJob(job.id);
+      if (await this.claimJob(job.id)) await this.processJob(job.id);
     }
   }
 
   async processPending(limit = 20) {
     const jobs = await this.db.moyKlassSyncJob.findMany({
       where: {
-        status: { in: ["pending", "failed"] },
-        OR: [{ nextRunAt: null }, { nextRunAt: { lte: new Date() } }]
+        OR: [
+          {
+            status: { in: ["pending", "failed"] },
+            OR: [{ nextRunAt: null }, { nextRunAt: { lte: new Date() } }]
+          },
+          {
+            status: "processing",
+            lockedAt: { lt: new Date(Date.now() - LOCK_TIMEOUT_MS) }
+          }
+        ]
       },
       orderBy: { createdAt: "asc" },
       take: limit
     });
 
+    let processed = 0;
     for (const job of jobs) {
-      await this.processJob(job.id);
+      if (await this.claimJob(job.id)) {
+        await this.processJob(job.id);
+        processed += 1;
+      }
     }
 
-    return jobs.length;
+    return processed;
+  }
+
+  private async claimJob(jobId: string): Promise<boolean> {
+    const result = await this.db.moyKlassSyncJob.updateMany({
+      where: {
+        id: jobId,
+        OR: [
+          {
+            status: { in: ["pending", "failed"] },
+            OR: [{ nextRunAt: null }, { nextRunAt: { lte: new Date() } }]
+          },
+          {
+            status: "processing",
+            lockedAt: { lt: new Date(Date.now() - LOCK_TIMEOUT_MS) }
+          }
+        ]
+      },
+      data: {
+        status: "processing",
+        lastError: null,
+        nextRunAt: null,
+        lockedAt: new Date(),
+        lockedBy: env.WORKER_ID
+      }
+    });
+
+    return result.count === 1;
   }
 
   private async processJob(jobId: string) {
-    await this.db.moyKlassSyncJob.update({
-      where: { id: jobId },
-      data: { status: "processing", lastError: null, nextRunAt: null }
-    });
-
     try {
       for (const step of STEPS) {
         const savedStep = await this.db.moyKlassSyncStep.findUniqueOrThrow({
@@ -154,7 +193,9 @@ export class MoyKlassSyncQueueService {
             data: {
               status: "failed",
               lastError: message,
-              nextRunAt: new Date(Date.now() + RETRY_DELAY_MS)
+              nextRunAt: new Date(Date.now() + RETRY_DELAY_MS),
+              lockedAt: null,
+              lockedBy: null
             }
           });
           return;
@@ -173,7 +214,14 @@ export class MoyKlassSyncQueueService {
       });
       await this.db.moyKlassSyncJob.update({
         where: { id: jobId },
-        data: { status: "done", lastError: null, nextRunAt: null, completedAt: new Date() }
+        data: {
+          status: "done",
+          lastError: null,
+          nextRunAt: null,
+          lockedAt: null,
+          lockedBy: null,
+          completedAt: new Date()
+        }
       });
     } catch (error) {
       await this.db.moyKlassSyncJob.update({
@@ -181,7 +229,9 @@ export class MoyKlassSyncQueueService {
         data: {
           status: "failed",
           lastError: errorMessage(error),
-          nextRunAt: new Date(Date.now() + RETRY_DELAY_MS)
+          nextRunAt: new Date(Date.now() + RETRY_DELAY_MS),
+          lockedAt: null,
+          lockedBy: null
         }
       });
     }

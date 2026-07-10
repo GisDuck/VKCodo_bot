@@ -8,6 +8,7 @@ import { VkEventLogService } from "./vk-event-log.service.js";
 import { VkMessageService } from "./vk-message.service.js";
 import { formatMessageLessonDate, formatMessageLessonDateFromIso } from "../lib/message-date-format.js";
 import { isRetryableExternalError, withExternalApiRetry } from "../lib/external-retry.js";
+import { validatePersonName } from "../lib/person-name.js";
 
 type VkIncomingUpdate = {
   type?: string;
@@ -498,16 +499,21 @@ export class VkBotService {
   }
 
   private async handleParentName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
+    const name = validatePersonName(text, "Имя родителя");
+    if (!name.ok) {
+      await this.messages.sendText(peerId, `${name.reason}. Напишите, пожалуйста, настоящее имя родителя`);
+      return;
+    }
     if (!text) {
       await this.messages.sendText(peerId, "Напишите, пожалуйста, имя родителя");
       return;
     }
-    draft.parentName = text;
-    await this.db.parent.update({ where: { id: parentId }, data: { name: text } });
+    draft.parentName = name.value;
+    await this.db.parent.update({ where: { id: parentId }, data: { name: name.value } });
     await this.setSession(parentId, "awaiting_phone", draft);
     await this.messages.sendInlineKeyboard(
       peerId,
-      `${text}, приятно познакомиться! Подскажите, пожалуйста, номер телефона для записи.`,
+      `${name.value}, приятно познакомиться! Подскажите, пожалуйста, номер телефона для записи.`,
       this.buildEditButtons(draft, ["parentName"])
     );
   }
@@ -592,15 +598,20 @@ export class VkBotService {
   }
 
   private async handleChildName(parentId: string, peerId: number, draft: SessionDraft, text: string) {
+    const name = validatePersonName(text, "Имя ребенка");
+    if (!name.ok) {
+      await this.messages.sendText(peerId, `${name.reason}. Напишите, пожалуйста, настоящее имя ребенка`);
+      return;
+    }
     if (!text) {
       await this.messages.sendText(peerId, "Напишите имя ребенка");
       return;
     }
-    draft.currentChild = { name: text };
+    draft.currentChild = { name: name.value };
     await this.setSession(parentId, "awaiting_child_age", draft);
     await this.messages.sendInlineKeyboard(
       peerId,
-      `${text} найдет много интересного в нашей школе! А сколько ему/ей лет?`,
+      `${name.value} найдет много интересного в нашей школе! А сколько ему/ей лет?`,
       this.buildEditButtons(draft, ["childName"])
     );
   }
@@ -729,6 +740,10 @@ export class VkBotService {
       );
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
+      if (!list.hasCourseInBranch) {
+        await this.sendNoCourseInBranchMessage(peerId);
+        return;
+      }
       if (list.lessons.length === 0) {
         await this.sendNoLessonsMessage(peerId);
         return;
@@ -928,6 +943,10 @@ export class VkBotService {
       );
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
+      if (!list.hasCourseInBranch) {
+        await this.sendNoCourseInBranchMessage(peerId);
+        return;
+      }
       if (list.lessons.length === 0) {
         await this.sendNoLessonsMessage(peerId);
         return;
@@ -1332,6 +1351,11 @@ export class VkBotService {
       draft.availableLessons = list.lessons;
       await this.setSession(parentId, "awaiting_lesson", draft);
 
+      if (!list.hasCourseInBranch) {
+        await this.sendNoCourseInBranchMessage(peerId);
+        return;
+      }
+
       if (list.lessons.length === 0) {
         await this.sendNoLessonsMessage(peerId);
         return;
@@ -1444,6 +1468,14 @@ export class VkBotService {
       peerId,
       "Сейчас нет доступных дат для занятий. Попробуйте позже или нажмите кнопку, чтобы проверить еще раз",
       this.messages.buildRetryLessonsButtons()
+    );
+  }
+
+  private async sendNoCourseInBranchMessage(peerId: number) {
+    await this.messages.sendKeyboard(
+      peerId,
+      "К сожалению в выбранном филиале нет занятий по этому направлению. Можем Вам предложить рассмотреть другой филиал или другое направление",
+      this.messages.buildLessonButtons([], { withDraftChangeActions: true })
     );
   }
 
